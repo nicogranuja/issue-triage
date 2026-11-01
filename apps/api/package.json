@@ -1,0 +1,32 @@
+{
+  "name": "@issue-triage/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Webhook ingestion and triage API",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --conditions=@issue-triage/source --env-file-if-exists=../../.env src/index.ts",
+    "start": "node --env-file-if-exists=../../.env dist/index.js",
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.14",
+    "@issue-triage/shared": "0.0.0",
+    "drizzle-orm": "0.45.4",
+    "fastify": "5.12.7",
+    "pg": "8.23.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "drizzle-kit": "0.31.11",
+    "tsx": "4.23.15",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}

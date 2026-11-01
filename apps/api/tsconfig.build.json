@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "sourceMap": true,
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    // Compile against the built declarations of workspace packages, not their sources.
+    "customConditions": []
+  },
+  "include": ["src"],
+  "references": [{ "path": "../../packages/shared/tsconfig.build.json" }]
+}

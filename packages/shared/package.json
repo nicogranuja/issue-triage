@@ -1,0 +1,25 @@
+{
+  "name": "@issue-triage/shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Domain types and schemas shared by the API and the web app",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@issue-triage/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  }
+}
