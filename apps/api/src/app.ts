@@ -3,6 +3,7 @@ import Fastify, { type FastifyBaseLogger, type FastifyError, type FastifyInstanc
 import type { Config } from './config.js';
 import type { Database } from './db/client.js';
 import { healthRoutes } from './routes/health.js';
+import { githubWebhookRoutes } from './webhooks/routes.js';
 
 export interface AppDependencies {
   config: Config;
@@ -11,7 +12,7 @@ export interface AppDependencies {
 }
 
 /** Builds the HTTP app without listening, so tests can drive it with `app.inject()`. */
-export async function buildApp({ logger }: AppDependencies): Promise<FastifyInstance> {
+export async function buildApp({ config, db, logger }: AppDependencies): Promise<FastifyInstance> {
   const app = Fastify({ loggerInstance: logger });
 
   // Log server-side failures with full detail, but never leak internals to the caller.
@@ -25,5 +26,6 @@ export async function buildApp({ logger }: AppDependencies): Promise<FastifyInst
   });
 
   await app.register(healthRoutes);
+  await app.register(githubWebhookRoutes, { db, secret: config.github.webhookSecret });
   return app;
 }

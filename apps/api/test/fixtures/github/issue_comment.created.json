@@ -1,0 +1,39 @@
+{
+  "action": "created",
+  "issue": {
+    "html_url": "https://github.com/lumen-labs/lumen/issues/42",
+    "id": 2849301122,
+    "number": 42,
+    "title": "PDF export fails for dashboards with an empty panel",
+    "state": "open"
+  },
+  "comment": {
+    "id": 3401287765,
+    "html_url": "https://github.com/lumen-labs/lumen/issues/42#issuecomment-3401287765",
+    "user": {
+      "login": "grace-maint",
+      "id": 7710932,
+      "type": "User"
+    },
+    "created_at": "2026-10-30T17:25:40Z",
+    "updated_at": "2026-10-30T17:25:40Z",
+    "author_association": "MEMBER",
+    "body": "Reproduced on main. The empty panel has no series, and the PDF renderer assumes at least one."
+  },
+  "repository": {
+    "id": 708812345,
+    "name": "lumen",
+    "full_name": "lumen-labs/lumen",
+    "private": false,
+    "owner": {
+      "login": "lumen-labs",
+      "id": 98123456,
+      "type": "Organization"
+    }
+  },
+  "sender": {
+    "login": "grace-maint",
+    "id": 7710932,
+    "type": "User"
+  }
+}

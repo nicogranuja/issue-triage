@@ -1,0 +1,38 @@
+{
+  "zen": "Keep it logically awesome.",
+  "hook_id": 512340987,
+  "hook": {
+    "type": "Repository",
+    "id": 512340987,
+    "name": "web",
+    "active": true,
+    "events": ["issues", "issue_comment"],
+    "config": {
+      "content_type": "json",
+      "insecure_ssl": "0",
+      "url": "https://triage.example.com/webhooks/github"
+    },
+    "created_at": "2026-10-30T15:58:02Z",
+    "updated_at": "2026-10-30T15:58:02Z"
+  },
+  "repository": {
+    "id": 708812345,
+    "node_id": "R_kgDOKmB3cQ",
+    "name": "lumen",
+    "full_name": "lumen-labs/lumen",
+    "private": false,
+    "owner": {
+      "login": "lumen-labs",
+      "id": 98123456,
+      "type": "Organization",
+      "html_url": "https://github.com/lumen-labs"
+    },
+    "html_url": "https://github.com/lumen-labs/lumen"
+  },
+  "sender": {
+    "login": "grace-maint",
+    "id": 7710932,
+    "type": "User",
+    "html_url": "https://github.com/grace-maint"
+  }
+}
