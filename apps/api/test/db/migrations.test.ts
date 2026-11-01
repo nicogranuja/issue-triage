@@ -24,6 +24,10 @@ describe('migrations', () => {
     await database.close();
   });
 
+  it('runs on the driver selected by DATABASE_URL', () => {
+    expect(database.driver).toBe(process.env.DATABASE_URL ? 'postgres' : 'pglite');
+  });
+
   it('creates every table on an empty database', async () => {
     await database.migrate();
 

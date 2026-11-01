@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Test (PGlite)
+        run: npm test
+      - run: npm run build
+      - name: Check migrations match the schema
+        run: |
+          npm run db:generate -w @issue-triage/api
+          if [ -n "$(git status --porcelain -- apps/api/drizzle)" ]; then
+            echo "::error::apps/api/src/db/schema.ts has changes without a migration. Run npm run db:generate -w @issue-triage/api and commit the result."
+            git status --porcelain -- apps/api/drizzle
+            exit 1
+          fi
+
+  postgres:
+    name: Migrations and API tests (Postgres 17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: issue_triage
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Throwaway credentials for the CI service container only.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/issue_triage
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Apply migrations
+        run: npm run db:migrate -w @issue-triage/api
+      - name: Apply migrations again (no-op)
+        run: npm run db:migrate -w @issue-triage/api
+      # With DATABASE_URL set, each test file runs in its own database on this server.
+      - name: Test (Postgres)
+        run: npm test -w @issue-triage/api
