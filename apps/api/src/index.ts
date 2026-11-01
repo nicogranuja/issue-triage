@@ -1,16 +1,34 @@
+import { pino } from 'pino';
+
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
+import { connectDatabase } from './db/client.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const app = await buildApp({ config });
+  const logger = pino({ level: config.logLevel });
+
+  const database = await connectDatabase(config.database, {
+    onPoolError: (error) => {
+      logger.error({ err: error }, 'idle database connection failed');
+    },
+  });
+  // The embedded database is private to this process, so it migrates itself on startup. A shared
+  // Postgres is migrated as a separate deploy step (`npm run db:migrate`).
+  if (database.driver === 'pglite') {
+    await database.migrate();
+  }
+  logger.info({ driver: database.driver }, 'database ready');
+
+  const app = await buildApp({ config, db: database.db, logger });
+  app.addHook('onClose', () => database.close());
 
   const shutdown = (signal: NodeJS.Signals) => {
-    app.log.info({ signal }, 'shutting down');
+    logger.info({ signal }, 'shutting down');
     app.close().then(
       () => process.exit(0),
       (error: unknown) => {
-        app.log.error({ err: error }, 'error during shutdown');
+        logger.error({ err: error }, 'error during shutdown');
         process.exit(1);
       },
     );

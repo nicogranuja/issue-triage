@@ -21,3 +21,11 @@ export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];
 /** What a reviewer did with a suggestion. */
 export const REVIEW_DECISIONS = ['accepted', 'edited', 'rejected'] as const;
 export type ReviewDecision = (typeof REVIEW_DECISIONS)[number];
+
+/** An existing issue that a suggestion flags as a likely duplicate. */
+export interface DuplicateCandidate {
+  /** Internal id of the existing issue. */
+  issueId: number;
+  /** Why the issues look like duplicates, shown to the reviewer. */
+  reason: string;
+}

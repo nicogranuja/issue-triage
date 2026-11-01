@@ -11,7 +11,9 @@
     "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "db:generate": "NODE_OPTIONS=--conditions=@issue-triage/source drizzle-kit generate",
+    "db:migrate": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env src/db/migrate.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "0.5.14",
@@ -19,6 +21,7 @@
     "drizzle-orm": "0.45.4",
     "fastify": "5.12.7",
     "pg": "8.23.1",
+    "pino": "10.4.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
