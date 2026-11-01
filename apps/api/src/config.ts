@@ -14,6 +14,8 @@ const envSchema = databaseEnvSchema.extend({
   HOST: z.string().min(1).default('127.0.0.1'),
   PORT: z.coerce.number().int().min(0).max(65_535).default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  /** Shared secret configured on the GitHub webhook; used to verify `X-Hub-Signature-256`. */
+  GITHUB_WEBHOOK_SECRET: z.string().min(16, 'must be at least 16 characters'),
 });
 
 export type DatabaseConfig =
@@ -25,6 +27,7 @@ export interface Config {
   server: { host: string; port: number };
   logLevel: z.infer<typeof envSchema>['LOG_LEVEL'];
   database: DatabaseConfig;
+  github: { webhookSecret: string };
 }
 
 export class ConfigError extends Error {
@@ -62,5 +65,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     server: { host: parsed.HOST, port: parsed.PORT },
     logLevel: parsed.LOG_LEVEL,
     database: toDatabaseConfig(parsed),
+    github: { webhookSecret: parsed.GITHUB_WEBHOOK_SECRET },
   };
 }
