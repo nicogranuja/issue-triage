@@ -27,7 +27,10 @@ export interface DatabaseHandle {
 }
 
 export interface ConnectOptions {
-  /** Called when an idle pooled connection fails (for example, the server restarts). */
+  /**
+   * Called when an idle pooled Postgres connection fails, for example when the server restarts.
+   * Without a handler, node-postgres treats this as fatal and the process crashes.
+   */
   onPoolError?: (error: Error) => void;
 }
 
@@ -40,8 +43,9 @@ export async function connectDatabase(
 ): Promise<DatabaseHandle> {
   if (config.driver === 'postgres') {
     const pool = new pg.Pool({ connectionString: config.url });
-    // Without a listener, an error on an idle client crashes the process.
-    pool.on('error', options.onPoolError ?? (() => undefined));
+    if (options.onPoolError) {
+      pool.on('error', options.onPoolError);
+    }
     const db = drizzlePostgres({ client: pool, schema });
     return {
       driver: 'postgres',
