@@ -4,6 +4,10 @@ import type { IssueState, Priority } from '@issue-triage/shared';
 export const TRIAGE_PROVIDERS = ['anthropic', 'bedrock', 'fake'] as const;
 export type TriageProvider = (typeof TRIAGE_PROVIDERS)[number];
 
+/** Effort levels of the Messages API: how much the model thinks before answering. */
+export const TRIAGE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type TriageEffort = (typeof TRIAGE_EFFORTS)[number];
+
 /** Everything the model sees about one issue. */
 export interface TriageInput {
   /** `owner/name` */

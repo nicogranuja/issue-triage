@@ -16,6 +16,8 @@
     "db:migrate": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env src/db/migrate.ts"
   },
   "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "1.1.1",
+    "@anthropic-ai/sdk": "1.5.0",
     "@electric-sql/pglite": "0.5.14",
     "@issue-triage/shared": "0.0.0",
     "drizzle-orm": "0.45.4",
