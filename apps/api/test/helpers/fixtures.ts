@@ -5,7 +5,13 @@ import { readFileSync } from 'node:fs';
  * shapes in GitHub's webhook documentation, trimmed to fields a real delivery carries.
  */
 
-type IssuesFixtureName = 'issues.opened' | 'issues.edited' | 'issues.labeled' | 'issues.closed';
+type IssuesFixtureName =
+  | 'issues.opened'
+  | 'issues.edited'
+  | 'issues.labeled'
+  | 'issues.closed'
+  | 'issues.deleted'
+  | 'issues.transferred';
 type FixtureName = IssuesFixtureName | 'issue_comment.created' | 'ping';
 
 /** The parts of an `issues` payload that tests modify. */

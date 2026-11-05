@@ -3,7 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { DatabaseHandle } from '../../src/db/client.js';
-import { issues, repositories, webhookDeliveries } from '../../src/db/schema.js';
+import { issues, repositories, triageJobs, webhookDeliveries } from '../../src/db/schema.js';
+import { claimTriageJob, completeTriageJob } from '../../src/triage/queue.js';
 import { signPayload } from '../../src/webhooks/signature.js';
 import { createTestApp, deliver, TEST_WEBHOOK_SECRET } from '../helpers/app.js';
 import { createMigratedTestDatabase } from '../helpers/database.js';
@@ -27,7 +28,7 @@ describe('POST /webhooks/github', () => {
 
   beforeEach(async () => {
     await database.db.execute(
-      sql`truncate ${webhookDeliveries}, ${issues}, ${repositories} restart identity cascade`,
+      sql`truncate ${webhookDeliveries}, ${triageJobs}, ${issues}, ${repositories} restart identity cascade`,
     );
   });
 
@@ -179,6 +180,166 @@ describe('POST /webhooks/github', () => {
       expect((await storedIssue()).title).toBe(
         'PDF export fails for dashboards with an empty panel',
       );
+    });
+  });
+
+  describe('triage jobs', () => {
+    const jobs = () =>
+      database.db
+        .select({ status: triageJobs.status, lastError: triageJobs.lastError })
+        .from(triageJobs)
+        .orderBy(triageJobs.id);
+
+    /** Runs the pending job to completion, as a worker would. */
+    async function finishPendingJob() {
+      const claimed = await claimTriageJob(database.db, { workerId: 'test', leaseMs: 60_000 });
+      if (!claimed) {
+        throw new Error('Expected a pending triage job');
+      }
+      await completeTriageJob(database.db, claimed);
+    }
+
+    it('queues triage when an issue is opened, in the same transaction', async () => {
+      const response = await deliver(app, {
+        event: 'issues',
+        payload: issuesPayload('issues.opened'),
+      });
+
+      expect(response.json()).toEqual({ status: 'processed' });
+      const stored = await storedIssue();
+      expect(await database.db.select().from(triageJobs)).toMatchObject([
+        { issueId: stored.id, status: 'pending', attempts: 0 },
+      ]);
+    });
+
+    it('does not queue a second job while one is still pending', async () => {
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.opened') });
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.edited') });
+
+      expect(await jobs()).toEqual([{ status: 'pending', lastError: null }]);
+    });
+
+    it('queues new triage when a triaged issue is edited or reopened', async () => {
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.opened') });
+      await finishPendingJob();
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.edited') });
+      await finishPendingJob();
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.closed') });
+
+      const reopened = issuesPayload('issues.closed');
+      reopened.action = 'reopened';
+      Object.assign(reopened.issue, {
+        state: 'open',
+        state_reason: 'reopened',
+        closed_at: null,
+        updated_at: '2026-11-02T08:15:00Z',
+      });
+      await deliver(app, { event: 'issues', payload: reopened });
+
+      expect((await jobs()).map((job) => job.status)).toEqual([
+        'succeeded',
+        'succeeded',
+        'pending',
+      ]);
+    });
+
+    it('does not queue triage for label or state changes', async () => {
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.labeled') });
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.closed') });
+
+      expect(await jobs()).toEqual([]);
+    });
+
+    it('does not queue triage for an edit to a closed issue', async () => {
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.closed') });
+      const edited = issuesPayload('issues.closed');
+      edited.action = 'edited';
+      edited.issue.title = 'Renamed after closing';
+      edited.issue.updated_at = '2026-11-01T10:00:00Z';
+
+      await deliver(app, { event: 'issues', payload: edited });
+
+      expect((await storedIssue()).title).toBe('Renamed after closing');
+      expect(await jobs()).toEqual([]);
+    });
+
+    it('does not queue triage for a stale event', async () => {
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.edited') });
+      await finishPendingJob();
+
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.opened') });
+
+      expect((await jobs()).map((job) => job.status)).toEqual(['succeeded']);
+    });
+
+    it('rolls back the job when the webhook transaction fails', async () => {
+      const overflowing = issuesPayload('issues.opened');
+      overflowing.issue.number = 2 ** 31;
+
+      const response = await deliver(app, { event: 'issues', payload: overflowing });
+
+      expect(response.statusCode).toBe(500);
+      expect(await jobs()).toEqual([]);
+    });
+  });
+
+  describe('deleted and transferred issues', () => {
+    const jobStatuses = async () =>
+      (await database.db.select().from(triageJobs).orderBy(triageJobs.id)).map((job) => job.status);
+
+    it.each([
+      ['issues.deleted', 'deleted'],
+      ['issues.transferred', 'transferred'],
+    ] as const)('marks the issue removed and cancels triage on %s', async (fixture, reason) => {
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.opened') });
+
+      const response = await deliver(app, { event: 'issues', payload: issuesPayload(fixture) });
+
+      expect(response.json()).toEqual({ status: 'processed' });
+      const stored = await storedIssue();
+      expect(stored.removalReason).toBe(reason);
+      expect(stored.removedAt).toBeInstanceOf(Date);
+      const [job] = await database.db.select().from(triageJobs);
+      expect(job).toMatchObject({
+        status: 'cancelled',
+        lastError: `Issue was ${reason} on GitHub`,
+      });
+    });
+
+    it('cancels a job that a worker is already running', async () => {
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.opened') });
+      const running = await claimTriageJob(database.db, { workerId: 'test', leaseMs: 60_000 });
+      if (!running) {
+        throw new Error('Expected a pending triage job');
+      }
+
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.deleted') });
+
+      // The worker's result is discarded when it tries to save it.
+      expect(await completeTriageJob(database.db, running)).toBe(false);
+      expect(await jobStatuses()).toEqual(['cancelled']);
+    });
+
+    it('keeps the issue removed and untriaged when later events arrive', async () => {
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.opened') });
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.deleted') });
+
+      // A newer edit (out-of-order delivery) and a redelivered older event.
+      const edited = issuesPayload('issues.edited');
+      edited.issue.updated_at = '2026-11-01T09:00:00Z';
+      await deliver(app, { event: 'issues', payload: edited });
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.opened') });
+
+      expect((await storedIssue()).removalReason).toBe('deleted');
+      expect(await jobStatuses()).toEqual(['cancelled']);
+    });
+
+    it('records the removal of an issue it never saw, so it cannot be resurrected later', async () => {
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.deleted') });
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.opened') });
+
+      expect((await storedIssue()).removalReason).toBe('deleted');
+      expect(await jobStatuses()).toEqual([]);
     });
   });
 

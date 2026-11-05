@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { Database, Transaction } from '../db/client.js';
 import { claimDelivery } from './deliveries.js';
-import { upsertIssue } from './issues.js';
+import { applyIssuesEvent } from './issues.js';
 import { isHandledIssueAction, issuesEventSchema, readAction } from './payloads.js';
 import { SIGNATURE_HEADER, verifySignature } from './signature.js';
 
@@ -45,7 +45,7 @@ function planDelivery(event: string, action: string | null, payload: unknown): D
       apply: async (tx) => ({
         issueNumber: parsed.data.issue.number,
         repository: parsed.data.repository.full_name,
-        result: await upsertIssue(tx, parsed.data),
+        ...(await applyIssuesEvent(tx, parsed.data)),
       }),
     };
   }
@@ -54,8 +54,8 @@ function planDelivery(event: string, action: string | null, payload: unknown): D
 }
 
 /**
- * `POST /webhooks/github`: verifies the signature, deduplicates by delivery id, and mirrors
- * issue events into the database.
+ * `POST /webhooks/github`: verifies the signature, deduplicates by delivery id, mirrors issue
+ * events into the database, and queues issues for triage.
  */
 export const githubWebhookRoutes: FastifyPluginAsync<GithubWebhookOptions> = async (
   app,

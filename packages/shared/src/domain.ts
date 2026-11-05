@@ -7,6 +7,13 @@
 export const ISSUE_STATES = ['open', 'closed'] as const;
 export type IssueState = (typeof ISSUE_STATES)[number];
 
+/**
+ * Why an issue no longer exists in its repository. Removed issues are kept (their history and
+ * reviews stay intact) but never triaged again and never shown in the review queue.
+ */
+export const ISSUE_REMOVAL_REASONS = ['deleted', 'transferred'] as const;
+export type IssueRemovalReason = (typeof ISSUE_REMOVAL_REASONS)[number];
+
 /** Priority levels a triage suggestion can propose and a reviewer can set, most urgent first. */
 export const PRIORITIES = ['urgent', 'high', 'medium', 'low'] as const;
 export type Priority = (typeof PRIORITIES)[number];

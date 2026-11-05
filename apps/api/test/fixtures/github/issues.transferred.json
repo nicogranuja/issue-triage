@@ -1,0 +1,103 @@
+{
+  "action": "transferred",
+  "changes": {
+    "new_issue": {
+      "url": "https://api.github.com/repos/lumen-labs/lumen-exporter/issues/7",
+      "repository_url": "https://api.github.com/repos/lumen-labs/lumen-exporter",
+      "html_url": "https://github.com/lumen-labs/lumen-exporter/issues/7",
+      "id": 2851174409,
+      "node_id": "I_kwDOKpQ9Zs6p8c3d",
+      "number": 7,
+      "title": "PDF export fails for dashboards with an empty panel",
+      "user": {
+        "login": "ada-dev",
+        "id": 5821044,
+        "type": "User",
+        "html_url": "https://github.com/ada-dev"
+      },
+      "labels": [],
+      "state": "open",
+      "locked": false,
+      "assignee": null,
+      "assignees": [],
+      "milestone": null,
+      "comments": 0,
+      "created_at": "2026-10-30T16:04:11Z",
+      "updated_at": "2026-10-31T11:20:05Z",
+      "closed_at": null,
+      "author_association": "CONTRIBUTOR",
+      "state_reason": null,
+      "body": "Steps to reproduce:\n\n1. Create a dashboard with one empty panel\n2. Click Export > PDF\n\nExpected a PDF. Got a 500 and `TypeError: cannot read properties of undefined (reading 'series')` in the server log."
+    },
+    "new_repository": {
+      "id": 709934410,
+      "node_id": "R_kgDOKpQ9Zg",
+      "name": "lumen-exporter",
+      "full_name": "lumen-labs/lumen-exporter",
+      "private": false,
+      "owner": {
+        "login": "lumen-labs",
+        "id": 98123456,
+        "type": "Organization",
+        "html_url": "https://github.com/lumen-labs"
+      },
+      "html_url": "https://github.com/lumen-labs/lumen-exporter",
+      "description": "PDF and CSV export for Lumen dashboards",
+      "fork": false,
+      "default_branch": "main",
+      "open_issues_count": 3
+    }
+  },
+  "issue": {
+    "url": "https://api.github.com/repos/lumen-labs/lumen/issues/42",
+    "repository_url": "https://api.github.com/repos/lumen-labs/lumen",
+    "html_url": "https://github.com/lumen-labs/lumen/issues/42",
+    "id": 2849301122,
+    "node_id": "I_kwDOKmB3c86p1a2b",
+    "number": 42,
+    "title": "PDF export fails for dashboards with an empty panel",
+    "user": {
+      "login": "ada-dev",
+      "id": 5821044,
+      "type": "User",
+      "html_url": "https://github.com/ada-dev"
+    },
+    "labels": [],
+    "state": "open",
+    "locked": false,
+    "assignee": null,
+    "assignees": [],
+    "milestone": null,
+    "comments": 0,
+    "created_at": "2026-10-30T16:04:11Z",
+    "updated_at": "2026-10-31T11:20:05Z",
+    "closed_at": null,
+    "author_association": "CONTRIBUTOR",
+    "state_reason": null,
+    "body": "Steps to reproduce:\n\n1. Create a dashboard with one empty panel\n2. Click Export > PDF\n\nExpected a PDF. Got a 500 and `TypeError: cannot read properties of undefined (reading 'series')` in the server log."
+  },
+  "repository": {
+    "id": 708812345,
+    "node_id": "R_kgDOKmB3cQ",
+    "name": "lumen",
+    "full_name": "lumen-labs/lumen",
+    "private": false,
+    "owner": {
+      "login": "lumen-labs",
+      "id": 98123456,
+      "type": "Organization",
+      "html_url": "https://github.com/lumen-labs"
+    },
+    "html_url": "https://github.com/lumen-labs/lumen",
+    "description": "Dashboards for small teams",
+    "fork": false,
+    "default_branch": "main",
+    "open_issues_count": 17
+  },
+  "sender": {
+    "login": "ada-dev",
+    "id": 5821044,
+    "type": "User",
+    "html_url": "https://github.com/ada-dev"
+  }
+}

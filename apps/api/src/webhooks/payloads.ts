@@ -43,7 +43,29 @@ export const HANDLED_ISSUE_ACTIONS = [
   'closed',
   'labeled',
   'unlabeled',
+  'deleted',
+  'transferred',
 ] as const;
+export type HandledIssueAction = (typeof HANDLED_ISSUE_ACTIONS)[number];
+
+/**
+ * Actions after which the issue needs (new) triage: its text is new or changed, or it is open
+ * again. Label and state changes alone don't change what the issue is about.
+ */
+export const TRIAGE_ISSUE_ACTIONS = [
+  'opened',
+  'edited',
+  'reopened',
+] as const satisfies readonly HandledIssueAction[];
+
+/**
+ * Actions after which the issue is gone from its repository. A transferred issue lives on in
+ * another repository under a new id; this one is retired.
+ */
+export const REMOVAL_ISSUE_ACTIONS = [
+  'deleted',
+  'transferred',
+] as const satisfies readonly HandledIssueAction[];
 
 export const issuesEventSchema = z.object({
   action: z.enum(HANDLED_ISSUE_ACTIONS),
@@ -52,9 +74,7 @@ export const issuesEventSchema = z.object({
 });
 export type IssuesEvent = z.infer<typeof issuesEventSchema>;
 
-export function isHandledIssueAction(
-  action: string | null,
-): action is (typeof HANDLED_ISSUE_ACTIONS)[number] {
+export function isHandledIssueAction(action: string | null): action is HandledIssueAction {
   return (HANDLED_ISSUE_ACTIONS as readonly (string | null)[]).includes(action);
 }
 

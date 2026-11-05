@@ -1,4 +1,5 @@
 import {
+  ISSUE_REMOVAL_REASONS,
   ISSUE_STATES,
   PRIORITIES,
   REVIEW_DECISIONS,
@@ -30,6 +31,7 @@ const createdAt = () => timestamptz('created_at').notNull().defaultNow();
 const updatedAt = () => timestamptz('updated_at').notNull().defaultNow();
 
 export const issueState = pgEnum('issue_state', ISSUE_STATES);
+export const issueRemovalReason = pgEnum('issue_removal_reason', ISSUE_REMOVAL_REASONS);
 export const priority = pgEnum('priority', PRIORITIES);
 export const suggestionStatus = pgEnum('suggestion_status', SUGGESTION_STATUSES);
 export const reviewDecision = pgEnum('review_decision', REVIEW_DECISIONS);
@@ -58,6 +60,9 @@ export const repositories = pgTable(
 /**
  * Issues mirrored from GitHub. `github_updated_at` is GitHub's own timestamp and orders webhook
  * events, so a late or redelivered event never overwrites newer data.
+ *
+ * A deleted or transferred issue keeps its row with `removed_at` set, so a late event for it
+ * cannot bring it back as a new issue.
  */
 export const issues = pgTable(
   'issues',
@@ -81,11 +86,16 @@ export const issues = pgTable(
     githubCreatedAt: timestamptz('github_created_at').notNull(),
     githubUpdatedAt: timestamptz('github_updated_at').notNull(),
     closedAt: timestamptz('closed_at'),
+    removedAt: timestamptz('removed_at'),
+    removalReason: issueRemovalReason('removal_reason'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  // Also serves as the index for the repository_id foreign key.
-  (t) => [uniqueIndex('issues_repository_id_number_key').on(t.repositoryId, t.number)],
+  (t) => [
+    // Also serves as the index for the repository_id foreign key.
+    uniqueIndex('issues_repository_id_number_key').on(t.repositoryId, t.number),
+    check('issues_removal_complete', sql`(${t.removedAt} is null) = (${t.removalReason} is null)`),
+  ],
 );
 
 /**

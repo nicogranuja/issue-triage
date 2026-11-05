@@ -15,6 +15,13 @@
       "when": 1793854083639,
       "tag": "0001_triage_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793854360952,
+      "tag": "0002_issue_removal",
+      "breakpoints": true
     }
   ]
 }
