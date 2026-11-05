@@ -9,6 +9,7 @@ import {
 } from '@issue-triage/shared';
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   check,
@@ -154,7 +155,16 @@ export const triageJobs = pgTable(
   ],
 );
 
-/** Model output for an issue, awaiting human review. Written by the triage engine. */
+const confidence = (name: string) => real(name).notNull();
+const confidenceRange = (column: AnyPgColumn) =>
+  check(`triage_suggestions_${column.name}_range`, sql`${column} between 0 and 1`);
+
+/**
+ * Model output for an issue, awaiting human review. Written by the triage worker. Each judgement
+ * (labels, priority, duplicates) carries the model's confidence and a one-sentence rationale for
+ * the reviewer. `model`, `prompt_version`, token usage, and latency let evals compare prompt
+ * versions and models on cost as well as quality.
+ */
 export const triageSuggestions = pgTable(
   'triage_suggestions',
   {
@@ -163,16 +173,29 @@ export const triageSuggestions = pgTable(
       .notNull()
       .references(() => issues.id, { onDelete: 'cascade' }),
     status: suggestionStatus('status').notNull().default('pending'),
+    summary: text('summary').notNull(),
     labels: text('labels').array().notNull(),
+    labelsConfidence: confidence('labels_confidence'),
+    labelsRationale: text('labels_rationale').notNull(),
     priority: priority('priority').notNull(),
+    priorityConfidence: confidence('priority_confidence'),
+    priorityRationale: text('priority_rationale').notNull(),
     duplicates: jsonb('duplicates')
       .$type<DuplicateCandidate[]>()
       .notNull()
       .default(sql`'[]'::jsonb`),
-    summary: text('summary').notNull(),
-    confidence: real('confidence').notNull(),
+    duplicatesConfidence: confidence('duplicates_confidence'),
+    duplicatesRationale: text('duplicates_rationale').notNull(),
+    /** The model that answered, as reported by the provider (a fallback model, if one ran). */
     model: text('model').notNull(),
     promptVersion: text('prompt_version').notNull(),
+    inputTokens: integer('input_tokens').notNull(),
+    outputTokens: integer('output_tokens').notNull(),
+    cacheReadInputTokens: integer('cache_read_input_tokens').notNull(),
+    cacheCreationInputTokens: integer('cache_creation_input_tokens').notNull(),
+    /** 2 when the first output failed validation and the model corrected it. */
+    modelCalls: integer('model_calls').notNull(),
+    latencyMs: integer('latency_ms').notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -182,7 +205,13 @@ export const triageSuggestions = pgTable(
     index('triage_suggestions_pending_created_at_idx')
       .on(t.createdAt)
       .where(sql`${t.status} = 'pending'`),
-    check('triage_suggestions_confidence_range', sql`${t.confidence} between 0 and 1`),
+    // A newer suggestion supersedes the pending one, so reviewers see one per issue.
+    uniqueIndex('triage_suggestions_one_pending_per_issue_key')
+      .on(t.issueId)
+      .where(sql`${t.status} = 'pending'`),
+    confidenceRange(t.labelsConfidence),
+    confidenceRange(t.priorityConfidence),
+    confidenceRange(t.duplicatesConfidence),
   ],
 );
 

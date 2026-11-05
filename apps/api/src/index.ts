@@ -3,6 +3,7 @@ import { pino } from 'pino';
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
 import { connectDatabase } from './db/client.js';
+import { startTriageWorker } from './triage/start.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -23,15 +24,22 @@ async function main(): Promise<void> {
   const app = await buildApp({ config, db: database.db, logger });
   app.addHook('onClose', () => database.close());
 
+  // With PGlite the worker must run here: the embedded database belongs to this one process.
+  // With Postgres it can run here, in `npm run worker` processes, or both.
+  const worker = await startTriageWorker(config, database.db, logger);
+
   const shutdown = (signal: NodeJS.Signals) => {
     logger.info({ signal }, 'shutting down');
-    app.close().then(
-      () => process.exit(0),
-      (error: unknown) => {
-        logger.error({ err: error }, 'error during shutdown');
-        process.exit(1);
-      },
-    );
+    // The worker goes first: it still needs the database to put interrupted jobs back.
+    Promise.resolve(worker?.stop())
+      .then(() => app.close())
+      .then(
+        () => process.exit(0),
+        (error: unknown) => {
+          logger.error({ err: error }, 'error during shutdown');
+          process.exit(1);
+        },
+      );
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);

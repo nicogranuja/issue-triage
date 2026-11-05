@@ -7,7 +7,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --conditions=@issue-triage/source --env-file-if-exists=../../.env src/index.ts",
+    "dev:worker": "tsx watch --conditions=@issue-triage/source --env-file-if-exists=../../.env src/worker.ts",
     "start": "node --env-file-if-exists=../../.env dist/index.js",
+    "worker": "node --env-file-if-exists=../../.env dist/worker.js",
     "build": "tsc -b tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

@@ -29,6 +29,20 @@
       "when": 1793854501875,
       "tag": "0003_repository_labels",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793855418726,
+      "tag": "0004_drop_suggestion_confidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793855419089,
+      "tag": "0005_suggestion_details",
+      "breakpoints": true
     }
   ]
 }
