@@ -15,5 +15,8 @@ export default defineConfig({
   },
   test: {
     include: ['test/**/*.test.ts'],
+    // Setup hooks start an embedded PGlite (WASM) per test file, in parallel. On a busy or small
+    // machine that can take longer than the 10 second default; tests keep the 5 second limit.
+    hookTimeout: 30_000,
   },
 });
