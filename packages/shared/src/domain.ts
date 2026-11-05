@@ -19,8 +19,9 @@ export const PRIORITIES = ['urgent', 'high', 'medium', 'low'] as const;
 export type Priority = (typeof PRIORITIES)[number];
 
 /**
- * Where a triage suggestion is in the review flow. A suggestion is `superseded` when the issue
- * changes and a newer suggestion replaces it before anyone reviewed it.
+ * Where a triage suggestion is in the review flow. A suggestion is `superseded` when it stops
+ * applying before anyone reviewed it: a newer suggestion replaced it, or the issue was deleted
+ * or transferred.
  */
 export const SUGGESTION_STATUSES = ['pending', 'reviewed', 'superseded'] as const;
 export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];

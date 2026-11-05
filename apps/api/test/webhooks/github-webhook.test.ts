@@ -3,12 +3,19 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { DatabaseHandle } from '../../src/db/client.js';
-import { issues, repositories, triageJobs, webhookDeliveries } from '../../src/db/schema.js';
+import {
+  issues,
+  repositories,
+  triageJobs,
+  triageSuggestions,
+  webhookDeliveries,
+} from '../../src/db/schema.js';
 import { claimTriageJob, completeTriageJob } from '../../src/triage/queue.js';
 import { signPayload } from '../../src/webhooks/signature.js';
 import { createTestApp, deliver, TEST_WEBHOOK_SECRET } from '../helpers/app.js';
 import { createMigratedTestDatabase } from '../helpers/database.js';
 import { issuesPayload, payload } from '../helpers/fixtures.js';
+import { seedSuggestion } from '../helpers/seed.js';
 
 const ISSUE_GITHUB_ID = 2849301122;
 
@@ -28,7 +35,7 @@ describe('POST /webhooks/github', () => {
 
   beforeEach(async () => {
     await database.db.execute(
-      sql`truncate ${webhookDeliveries}, ${triageJobs}, ${issues}, ${repositories} restart identity cascade`,
+      sql`truncate ${webhookDeliveries}, ${triageSuggestions}, ${triageJobs}, ${issues}, ${repositories} restart identity cascade`,
     );
   });
 
@@ -304,6 +311,21 @@ describe('POST /webhooks/github', () => {
         status: 'cancelled',
         lastError: `Issue was ${reason} on GitHub`,
       });
+    });
+
+    it('retires an unreviewed suggestion, so the issue never reaches the review queue', async () => {
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.opened') });
+      const issue = await storedIssue();
+      await seedSuggestion(database.db, issue.id, { status: 'superseded' });
+      await seedSuggestion(database.db, issue.id);
+
+      await deliver(app, { event: 'issues', payload: issuesPayload('issues.deleted') });
+
+      const statuses = await database.db
+        .select({ status: triageSuggestions.status })
+        .from(triageSuggestions)
+        .orderBy(triageSuggestions.id);
+      expect(statuses).toEqual([{ status: 'superseded' }, { status: 'superseded' }]);
     });
 
     it('cancels a job that a worker is already running', async () => {

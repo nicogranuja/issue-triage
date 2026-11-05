@@ -1,8 +1,8 @@
 import type { IssueRemovalReason, IssueState } from '@issue-triage/shared';
-import { eq, lte, sql } from 'drizzle-orm';
+import { and, eq, lte, sql } from 'drizzle-orm';
 
 import type { Transaction } from '../db/client.js';
-import { issues, repositories } from '../db/schema.js';
+import { issues, repositories, triageSuggestions } from '../db/schema.js';
 import { cancelTriageJobsForIssue, enqueueTriageJob } from '../triage/queue.js';
 import { REMOVAL_ISSUE_ACTIONS, TRIAGE_ISSUE_ACTIONS, type IssuesEvent } from './payloads.js';
 
@@ -89,9 +89,10 @@ async function upsertIssue(tx: Transaction, event: IssuesEvent): Promise<StoredI
 }
 
 /**
- * Marks the issue as removed and cancels its triage jobs. Applied whatever the event order:
- * removal is final, so an older event that arrives later must not undo it. The upsert before it
- * guarantees the row exists, so a late `opened` for an issue we never saw cannot resurrect it.
+ * Marks the issue as removed, cancels its triage jobs, and retires its unreviewed suggestion, so
+ * it never reaches the review queue. Applied whatever the event order: removal is final, so an
+ * older event that arrives later must not undo it. The upsert before it guarantees the row
+ * exists, so a late `opened` for an issue we never saw cannot resurrect it.
  */
 async function removeIssue(
   tx: Transaction,
@@ -111,6 +112,12 @@ async function removeIssue(
     throw new Error(`No stored issue with GitHub id ${githubIssueId} to remove`);
   }
   await cancelTriageJobsForIssue(tx, removed.id, `Issue was ${reason} on GitHub`);
+  // A worker that saved just before this transaction is covered here; one saving after it finds
+  // its job cancelled and saves nothing.
+  await tx
+    .update(triageSuggestions)
+    .set({ status: 'superseded', updatedAt: sql`now()` })
+    .where(and(eq(triageSuggestions.issueId, removed.id), eq(triageSuggestions.status, 'pending')));
 }
 
 /**

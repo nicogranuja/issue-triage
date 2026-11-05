@@ -1,5 +1,5 @@
 import type { Database } from '../../src/db/client.js';
-import { issues, repositories } from '../../src/db/schema.js';
+import { issues, repositories, triageSuggestions } from '../../src/db/schema.js';
 
 type RepositoryRow = typeof repositories.$inferSelect;
 type IssueRow = typeof issues.$inferSelect;
@@ -58,6 +58,42 @@ export async function seedIssue(
     .returning();
   if (!row) {
     throw new Error('Issue insert returned no row');
+  }
+  return row;
+}
+
+/** Inserts a pending suggestion for an issue, as the triage worker would have stored it. */
+export async function seedSuggestion(
+  db: Database,
+  issueId: number,
+  overrides: Partial<typeof triageSuggestions.$inferInsert> = {},
+): Promise<typeof triageSuggestions.$inferSelect> {
+  const [row] = await db
+    .insert(triageSuggestions)
+    .values({
+      issueId,
+      summary: 'A seeded suggestion.',
+      labels: ['bug'],
+      labelsConfidence: 0.8,
+      labelsRationale: 'Seeded.',
+      priority: 'medium',
+      priorityConfidence: 0.6,
+      priorityRationale: 'Seeded.',
+      duplicatesConfidence: 0.5,
+      duplicatesRationale: 'Seeded.',
+      model: 'fake-triage-model',
+      promptVersion: 'triage-v1',
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      modelCalls: 1,
+      latencyMs: 0,
+      ...overrides,
+    })
+    .returning();
+  if (!row) {
+    throw new Error('Suggestion insert returned no row');
   }
   return row;
 }
