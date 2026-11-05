@@ -24,6 +24,8 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 
+import type { GitHubLabel } from '../github/client.js';
+
 // GitHub ids fit comfortably in a JS number (2^53), so bigint columns map to `number`.
 const id = () => bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity();
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' });
@@ -41,6 +43,8 @@ export const triageJobStatus = pgEnum('triage_job_status', TRIAGE_JOB_STATUSES);
 /**
  * Repositories we have received events for. Keyed internally by a surrogate id; `github_id` is
  * GitHub's stable id, which survives renames and transfers (unlike `full_name`).
+ *
+ * `labels` caches the repository's label set from the GitHub API: triage may only suggest these.
  */
 export const repositories = pgTable(
   'repositories',
@@ -51,6 +55,8 @@ export const repositories = pgTable(
     name: text('name').notNull(),
     fullName: text('full_name').notNull(),
     private: boolean('private').notNull(),
+    labels: jsonb('labels').$type<GitHubLabel[]>(),
+    labelsFetchedAt: timestamptz('labels_fetched_at'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

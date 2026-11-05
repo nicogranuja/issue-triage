@@ -22,6 +22,13 @@
       "when": 1793854360952,
       "tag": "0002_issue_removal",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793854501875,
+      "tag": "0003_repository_labels",
+      "breakpoints": true
     }
   ]
 }
