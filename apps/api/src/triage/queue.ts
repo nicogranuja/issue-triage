@@ -1,5 +1,5 @@
-import { and, asc, eq, inArray, lte, or, sql } from 'drizzle-orm';
-import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
+import { and, asc, eq, gt, inArray, lte, notExists, or, sql } from 'drizzle-orm';
+import { alias, type PgUpdateSetSource } from 'drizzle-orm/pg-core';
 
 import type { Database, Transaction } from '../db/client.js';
 import { triageJobs } from '../db/schema.js';
@@ -60,14 +60,19 @@ export async function enqueueTriageJob(tx: Executor, issueId: number): Promise<b
 }
 
 /**
- * Claims the next due job, or returns null when there is none. A job is due when it is pending
- * and its `run_after` has passed, or when it is running but its lease expired.
+ * Claims the next due job, or returns null when there is none. A job is due when it is pending,
+ * its `run_after` has passed, and no other job for the same issue is running; or when it is
+ * running but its lease expired. One job per issue at a time means an older run, which read the
+ * issue before an edit, can never finish after the newer run and replace its suggestion.
  *
  * This is one statement, equivalent to:
  *
  *   with next as (
  *     select id from triage_jobs
- *     where (status = 'pending' and run_after <= now())
+ *     where (status = 'pending' and run_after <= now() and not exists (
+ *             select 1 from triage_jobs running
+ *             where running.issue_id = triage_jobs.issue_id
+ *               and running.status = 'running' and running.locked_until > now()))
  *        or (status = 'running' and locked_until <= now())
  *     order by run_after, id
  *     limit 1
@@ -85,13 +90,29 @@ export async function claimTriageJob(
   db: Executor,
   { workerId, leaseMs }: ClaimOptions,
 ): Promise<ClaimedJob | null> {
+  const running = alias(triageJobs, 'running');
   const next = db.$with('next').as(
     db
       .select({ id: triageJobs.id })
       .from(triageJobs)
       .where(
         or(
-          and(eq(triageJobs.status, 'pending'), lte(triageJobs.runAfter, sql`now()`)),
+          and(
+            eq(triageJobs.status, 'pending'),
+            lte(triageJobs.runAfter, sql`now()`),
+            notExists(
+              db
+                .select({ id: running.id })
+                .from(running)
+                .where(
+                  and(
+                    eq(running.issueId, triageJobs.issueId),
+                    eq(running.status, 'running'),
+                    gt(running.lockedUntil, sql`now()`),
+                  ),
+                ),
+            ),
+          ),
           and(eq(triageJobs.status, 'running'), lte(triageJobs.lockedUntil, sql`now()`)),
         ),
       )
@@ -136,9 +157,15 @@ type JobUpdate = PgUpdateSetSource<typeof triageJobs>;
 
 /**
  * Applies an update only while the caller still holds the lease. Returns false when the lease
- * was lost: it expired and another worker reclaimed the job, or the job was cancelled.
+ * was lost: another worker reclaimed the job, or the job was cancelled. With `unexpired`, a lease
+ * past its `locked_until` counts as lost too, even if nobody has reclaimed it yet.
  */
-async function updateLeased(tx: Executor, lease: Lease, set: JobUpdate): Promise<boolean> {
+async function updateLeased(
+  tx: Executor,
+  lease: Lease,
+  set: JobUpdate,
+  { unexpired = false }: { unexpired?: boolean } = {},
+): Promise<boolean> {
   const updated = await tx
     .update(triageJobs)
     .set({ ...set, updatedAt: sql`now()` })
@@ -147,6 +174,7 @@ async function updateLeased(tx: Executor, lease: Lease, set: JobUpdate): Promise
         eq(triageJobs.id, lease.jobId),
         eq(triageJobs.leaseToken, lease.leaseToken),
         eq(triageJobs.status, 'running'),
+        unexpired ? gt(triageJobs.lockedUntil, sql`now()`) : undefined,
       ),
     )
     .returning({ id: triageJobs.id });
@@ -165,14 +193,17 @@ function truncateError(message: string): string {
 /**
  * Marks a job done. Call it in the transaction that stores the job's result, and roll that
  * transaction back when this returns false, so a worker that lost its lease writes nothing.
+ *
+ * The lease must also be unexpired: once it expires, a newer job for the issue may start, and a
+ * late result from this one must not land after it.
  */
 export function completeTriageJob(tx: Executor, lease: Lease): Promise<boolean> {
-  return updateLeased(tx, lease, {
-    ...releaseLease,
-    status: 'succeeded',
-    lastError: null,
-    finishedAt: sql`now()`,
-  });
+  return updateLeased(
+    tx,
+    lease,
+    { ...releaseLease, status: 'succeeded', lastError: null, finishedAt: sql`now()` },
+    { unexpired: true },
+  );
 }
 
 /** What happened when a job was put back in the queue. */

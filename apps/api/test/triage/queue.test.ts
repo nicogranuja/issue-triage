@@ -127,6 +127,38 @@ describe('triage job queue', () => {
       expect(await claimTriageJob(db(), claimOptions)).toBeNull();
     });
 
+    it('does not start a second job for an issue while one is running', async () => {
+      const [issueId = 0, otherIssueId = 0] = await seedIssues(2);
+      await enqueueTriageJob(db(), issueId);
+      const running = await claim();
+      await enqueueTriageJob(db(), issueId); // the issue is edited mid-run
+      await enqueueTriageJob(db(), otherIssueId);
+
+      // Other issues are not held up...
+      expect((await claim()).issueId).toBe(otherIssueId);
+      // ...but this issue's newer job waits for the running one.
+      expect(await claimTriageJob(db(), claimOptions)).toBeNull();
+
+      await completeTriageJob(db(), running);
+      expect((await claim()).issueId).toBe(issueId);
+    });
+
+    it('reclaims a stalled run before starting the newer job for the same issue', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      await enqueueTriageJob(db(), issueId);
+      const stalled = await claim();
+      await enqueueTriageJob(db(), issueId);
+      await backdate(stalled.jobId, 'locked_until');
+
+      const reclaimed = await claim();
+      expect(reclaimed).toMatchObject({ jobId: stalled.jobId, attempts: 2 });
+      expect(await claimTriageJob(db(), claimOptions)).toBeNull();
+
+      await completeTriageJob(db(), reclaimed);
+      expect((await claim()).jobId).not.toBe(stalled.jobId);
+    });
+
+    // On PGlite the claims are serialized; on Postgres they run on separate connections.
     it('never hands the same job to two concurrent claimers', async () => {
       const issueIds = await seedIssues(8);
       for (const issueId of issueIds) {
@@ -204,6 +236,15 @@ describe('triage job queue', () => {
   });
 
   describe('expired leases', () => {
+    it('refuses to complete a job after its lease expired, even if nobody reclaimed it', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      await enqueueTriageJob(db(), issueId);
+      const claimed = await claim();
+      await backdate(claimed.jobId, 'locked_until');
+
+      expect(await completeTriageJob(db(), claimed)).toBe(false);
+    });
+
     it('lets another worker reclaim a job whose lease expired, and fences out the first', async () => {
       const [issueId = 0] = await seedIssues(1);
       await enqueueTriageJob(db(), issueId);
