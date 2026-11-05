@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { DrizzleQueryError } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import type { Database } from '../db/client.js';
@@ -58,7 +59,18 @@ function classify(error: unknown, timedOutAfterMs: number | null): Failure {
     return { message: error.message, retryable: error.retryable, retryAfterMs: error.retryAfterMs };
   }
   // Unexpected errors (a database hiccup, a bug) get the normal retry budget, then fail.
-  return { message: error instanceof Error ? error.message : String(error), retryable: true };
+  return { message: describeUnexpected(error), retryable: true };
+}
+
+/**
+ * A message for `last_error`. Drizzle's query errors repeat the SQL and its parameters, which
+ * here include model output and issue text, so only the database's own message is kept.
+ */
+function describeUnexpected(error: unknown): string {
+  if (error instanceof DrizzleQueryError) {
+    return `Database error: ${error.cause?.message ?? 'query failed'}`;
+  }
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
 /**
@@ -110,8 +122,12 @@ export class TriageWorker {
     this.#loops = Array.from({ length: this.#options.concurrency }, () => this.#loop());
   }
 
-  /** Stops claiming jobs and waits for in-flight ones, interrupting them after `graceMs`. */
-  async stop({ graceMs = 10_000 }: { graceMs?: number } = {}): Promise<void> {
+  /**
+   * Stops claiming jobs and waits for in-flight ones, interrupting them after `graceMs`. The
+   * default leaves time to put interrupted jobs back before a container runtime's usual 10
+   * second stop timeout sends SIGKILL.
+   */
+  async stop({ graceMs = 5_000 }: { graceMs?: number } = {}): Promise<void> {
     this.#stopping.abort();
     const loops = Promise.allSettled(this.#loops);
     const timer = new AbortController();

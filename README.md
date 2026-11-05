@@ -120,8 +120,10 @@ With Postgres, run workers separately and scale them independently, and set
 npm run dev:worker                    # or: npm run build && npm run worker -w @issue-triage/api
 ```
 
-On `SIGTERM` or `SIGINT` a worker stops claiming jobs, gives running ones 10 seconds to finish,
-then interrupts them and puts them back in the queue without using up an attempt.
+On `SIGTERM` or `SIGINT` a worker stops claiming jobs, gives running ones 5 seconds to finish,
+then interrupts them and puts them back in the queue without using up an attempt. That fits
+within the 10 seconds container runtimes usually allow before `SIGKILL`; a worker killed outright
+loses nothing either, since its jobs are claimed again when their leases expire.
 
 To check credentials with one real model call (a few cents; no database or GitHub needed):
 
