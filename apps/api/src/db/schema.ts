@@ -3,6 +3,7 @@ import {
   PRIORITIES,
   REVIEW_DECISIONS,
   SUGGESTION_STATUSES,
+  TRIAGE_JOB_STATUSES,
   type DuplicateCandidate,
 } from '@issue-triage/shared';
 import { sql } from 'drizzle-orm';
@@ -19,6 +20,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
 } from 'drizzle-orm/pg-core';
 
 // GitHub ids fit comfortably in a JS number (2^53), so bigint columns map to `number`.
@@ -32,6 +34,7 @@ export const priority = pgEnum('priority', PRIORITIES);
 export const suggestionStatus = pgEnum('suggestion_status', SUGGESTION_STATUSES);
 export const reviewDecision = pgEnum('review_decision', REVIEW_DECISIONS);
 export const webhookDeliveryOutcome = pgEnum('webhook_delivery_outcome', ['processed', 'ignored']);
+export const triageJobStatus = pgEnum('triage_job_status', TRIAGE_JOB_STATUSES);
 
 /**
  * Repositories we have received events for. Keyed internally by a surrogate id; `github_id` is
@@ -83,6 +86,56 @@ export const issues = pgTable(
   },
   // Also serves as the index for the repository_id foreign key.
   (t) => [uniqueIndex('issues_repository_id_number_key').on(t.repositoryId, t.number)],
+);
+
+/**
+ * The triage work queue. Workers claim jobs with `FOR UPDATE SKIP LOCKED` and hold a lease while
+ * they run; a job whose lease expires (its worker crashed or hung) can be claimed again. Every
+ * claim issues a fresh `lease_token`, and a worker can only finish a job while it still holds the
+ * matching token, so a worker that lost its lease can never overwrite the result of the next one.
+ */
+export const triageJobs = pgTable(
+  'triage_jobs',
+  {
+    id: id(),
+    issueId: bigint('issue_id', { mode: 'number' })
+      .notNull()
+      .references(() => issues.id, { onDelete: 'cascade' }),
+    status: triageJobStatus('status').notNull().default('pending'),
+    /** How many times the job has been claimed, including the current run. */
+    attempts: integer('attempts').notNull().default(0),
+    /** A pending job is not claimed before this time. Backoff after a failure moves it forward. */
+    runAfter: timestamptz('run_after').notNull().defaultNow(),
+    leaseToken: uuid('lease_token'),
+    /** Which worker holds the lease. For operators; correctness relies on `lease_token`. */
+    lockedBy: text('locked_by'),
+    lockedUntil: timestamptz('locked_until'),
+    lastError: text('last_error'),
+    finishedAt: timestamptz('finished_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // At most one pending job per issue: enqueueing again while one waits is a no-op, and the
+    // waiting job reads the latest issue text when it runs.
+    uniqueIndex('triage_jobs_one_pending_per_issue_key')
+      .on(t.issueId)
+      .where(sql`${t.status} = 'pending'`),
+    // The two ways a job becomes claimable: pending and due, or running with an expired lease.
+    index('triage_jobs_pending_run_after_idx')
+      .on(t.runAfter)
+      .where(sql`${t.status} = 'pending'`),
+    index('triage_jobs_running_locked_until_idx')
+      .on(t.lockedUntil)
+      .where(sql`${t.status} = 'running'`),
+    // Also serves the issue_id foreign key.
+    index('triage_jobs_issue_id_idx').on(t.issueId),
+    check('triage_jobs_attempts_non_negative', sql`${t.attempts} >= 0`),
+    check(
+      'triage_jobs_running_has_lease',
+      sql`(${t.status} = 'running') = (${t.leaseToken} is not null and ${t.lockedUntil} is not null)`,
+    ),
+  ],
 );
 
 /** Model output for an issue, awaiting human review. Written by the triage engine. */

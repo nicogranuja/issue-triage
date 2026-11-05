@@ -40,6 +40,7 @@ describe('migrations', () => {
       'issues',
       'repositories',
       'reviews',
+      'triage_jobs',
       'triage_suggestions',
       'webhook_deliveries',
     ]);

@@ -18,6 +18,20 @@ export type Priority = (typeof PRIORITIES)[number];
 export const SUGGESTION_STATUSES = ['pending', 'reviewed', 'superseded'] as const;
 export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];
 
+/**
+ * Where a triage job is in the queue. `pending` jobs wait for their `run_after` time, `running`
+ * jobs hold a lease, and the other three are final. `cancelled` means the work became pointless,
+ * for example because the issue was deleted before the job ran.
+ */
+export const TRIAGE_JOB_STATUSES = [
+  'pending',
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+] as const;
+export type TriageJobStatus = (typeof TRIAGE_JOB_STATUSES)[number];
+
 /** What a reviewer did with a suggestion. */
 export const REVIEW_DECISIONS = ['accepted', 'edited', 'rejected'] as const;
 export type ReviewDecision = (typeof REVIEW_DECISIONS)[number];
