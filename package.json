@@ -15,6 +15,7 @@
   "scripts": {
     "dev:api": "npm run dev -w @issue-triage/api",
     "dev:worker": "npm run dev:worker -w @issue-triage/api",
+    "smoke:triage": "npm run smoke:triage -w @issue-triage/api",
     "dev:web": "npm run dev -w @issue-triage/web",
     "lint": "eslint .",
     "format": "prettier --write .",

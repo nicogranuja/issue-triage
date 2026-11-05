@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "NODE_OPTIONS=--conditions=@issue-triage/source drizzle-kit generate",
-    "db:migrate": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env src/db/migrate.ts"
+    "db:migrate": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env src/db/migrate.ts",
+    "smoke:triage": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env scripts/smoke-triage.ts"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "1.1.1",
