@@ -11,6 +11,8 @@ import {
   webhookDeliveries,
 } from '../../src/db/schema.js';
 import { claimTriageJob, completeTriageJob } from '../../src/triage/queue.js';
+import { applyIssuesEvent } from '../../src/webhooks/issues.js';
+import { issuesEventSchema } from '../../src/webhooks/payloads.js';
 import { signPayload } from '../../src/webhooks/signature.js';
 import { createTestApp, deliver, TEST_WEBHOOK_SECRET } from '../helpers/app.js';
 import { createMigratedTestDatabase } from '../helpers/database.js';
@@ -206,7 +208,7 @@ describe('POST /webhooks/github', () => {
       await completeTriageJob(database.db, claimed);
     }
 
-    it('queues triage when an issue is opened, in the same transaction', async () => {
+    it('queues triage when an issue is opened', async () => {
       const response = await deliver(app, {
         event: 'issues',
         payload: issuesPayload('issues.opened'),
@@ -279,14 +281,21 @@ describe('POST /webhooks/github', () => {
       expect((await jobs()).map((job) => job.status)).toEqual(['succeeded']);
     });
 
-    it('rolls back the job when the webhook transaction fails', async () => {
-      const overflowing = issuesPayload('issues.opened');
-      overflowing.issue.number = 2 ** 31;
+    it('creates the job in the webhook transaction, so a rollback undoes both', async () => {
+      const event = issuesEventSchema.parse(issuesPayload('issues.opened'));
 
-      const response = await deliver(app, { event: 'issues', payload: overflowing });
+      await expect(
+        database.db.transaction(async (tx) => {
+          expect(await applyIssuesEvent(tx, event)).toEqual({
+            result: 'applied',
+            triage: 'enqueued',
+          });
+          throw new Error('a later step of the same transaction failed');
+        }),
+      ).rejects.toThrow('a later step');
 
-      expect(response.statusCode).toBe(500);
       expect(await jobs()).toEqual([]);
+      expect(await database.db.select().from(issues)).toEqual([]);
     });
   });
 
