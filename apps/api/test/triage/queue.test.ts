@@ -84,6 +84,22 @@ describe('triage job queue', () => {
       expect(jobs[0]).toMatchObject({ issueId, status: 'pending', attempts: 0 });
     });
 
+    it('gives a waiting job a fresh attempt budget when the issue changes again', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      await enqueueTriageJob(db(), issueId);
+      const claimed = await claim();
+      await scheduleTriageRetry(db(), claimed, { error: 'overloaded', delayMs: 60_000 });
+      const waiting = await job(claimed.jobId);
+
+      expect(await enqueueTriageJob(db(), issueId)).toBe(false);
+
+      expect(await job(claimed.jobId)).toMatchObject({
+        status: 'pending',
+        attempts: 0,
+        runAfter: waiting.runAfter,
+      });
+    });
+
     it('creates a new job when the previous one is already running', async () => {
       const [issueId = 0] = await seedIssues(1);
       await enqueueTriageJob(db(), issueId);

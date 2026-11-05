@@ -41,9 +41,10 @@ export interface ClaimOptions {
 }
 
 /**
- * Adds a pending job for an issue. A no-op if the issue already has a pending job: that job has
- * not started yet, so it will see the latest issue text anyway. A job that is already running
- * does not count, so an edit made mid-run still gets its own, later job.
+ * Adds a pending job for an issue. If the issue already has one, no second job is added: the
+ * pending job has not started, so it will read the latest issue text anyway. It does get a fresh
+ * attempt budget, since the text it will triage is new (it keeps any backoff it is waiting out).
+ * A job that is already running does not count, so an edit made mid-run gets its own job.
  *
  * Returns whether a job was created. Call it in the transaction that changed the issue.
  */
@@ -56,7 +57,14 @@ export async function enqueueTriageJob(tx: Executor, issueId: number): Promise<b
       where: sql`${triageJobs.status} = 'pending'`,
     })
     .returning({ id: triageJobs.id });
-  return inserted.length > 0;
+  if (inserted.length > 0) {
+    return true;
+  }
+  await tx
+    .update(triageJobs)
+    .set({ attempts: 0, updatedAt: sql`now()` })
+    .where(and(eq(triageJobs.issueId, issueId), eq(triageJobs.status, 'pending')));
+  return false;
 }
 
 /**
