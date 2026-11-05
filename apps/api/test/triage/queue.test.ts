@@ -12,6 +12,7 @@ import {
   failTriageJob,
   releaseTriageJob,
   retryDelayMs,
+  MAX_RETRY_DELAY_MS,
   scheduleTriageRetry,
   type ClaimedJob,
 } from '../../src/triage/queue.js';
@@ -258,12 +259,54 @@ describe('triage job queue', () => {
       expect(row.lastError?.length).toBeLessThan(2100);
     });
 
+    it('caps the delay a provider can ask for', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      await enqueueTriageJob(db(), issueId);
+      const claimed = await claim();
+
+      const before = Date.now();
+      expect(
+        await scheduleTriageRetry(db(), claimed, {
+          error: 'rate limited',
+          delayMs: 90 * 86_400_000,
+        }),
+      ).toBe('requeued');
+
+      const row = await job(claimed.jobId);
+      expect(row.runAfter.getTime()).toBeLessThan(before + MAX_RETRY_DELAY_MS + 60_000);
+    });
+
+    it.each([
+      [
+        'retrying',
+        (lease: ClaimedJob) => scheduleTriageRetry(database.db, lease, { error: 'x', delayMs: 1 }),
+      ],
+      ['releasing', (lease: ClaimedJob) => releaseTriageJob(database.db, lease)],
+    ])(
+      'cancels instead of %s a job when a newer job for the issue is already pending',
+      async (_, requeue) => {
+        const [issueId = 0] = await seedIssues(1);
+        await enqueueTriageJob(db(), issueId);
+        const running = await claim();
+        // The issue is edited while the job runs.
+        await enqueueTriageJob(db(), issueId);
+
+        expect(await requeue(running)).toBe('superseded');
+
+        const rows = await db().select().from(triageJobs).orderBy(triageJobs.id);
+        expect(rows.map((row) => [row.status, row.lastError])).toEqual([
+          ['cancelled', 'Superseded by a newer job for the same issue'],
+          ['pending', null],
+        ]);
+      },
+    );
+
     it('releases an interrupted job without counting the attempt', async () => {
       const [issueId = 0] = await seedIssues(1);
       await enqueueTriageJob(db(), issueId);
       const claimed = await claim();
 
-      expect(await releaseTriageJob(db(), claimed)).toBe(true);
+      expect(await releaseTriageJob(db(), claimed)).toBe('requeued');
 
       expect(await job(claimed.jobId)).toMatchObject({ status: 'pending', attempts: 0 });
       expect((await claim()).attempts).toBe(1);

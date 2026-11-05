@@ -293,6 +293,21 @@ describe('TriageWorker', () => {
       expect(await worker({ model }).runNext()).toBe(false);
     });
 
+    it('does not requeue over a newer job queued while it ran', async () => {
+      const { issue } = await seedJob();
+      const model = new FakeTriageModel({
+        respond: async () => {
+          await enqueueTriageJob(db(), issue.id);
+          throw new TriageModelError('overloaded', { retryable: true });
+        },
+      });
+
+      await worker({ model }).runNext();
+
+      const rows = await db().select().from(triageJobs).orderBy(triageJobs.id);
+      expect(rows.map((row) => row.status)).toEqual(['cancelled', 'pending']);
+    });
+
     it('waits at least as long as the provider asked', async () => {
       await seedJob();
       const model = new FakeTriageModel({

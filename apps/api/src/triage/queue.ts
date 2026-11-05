@@ -175,17 +175,57 @@ export function completeTriageJob(tx: Executor, lease: Lease): Promise<boolean> 
   });
 }
 
-/** Puts a job back in the queue to run again after `delayMs`. */
+/** What happened when a job was put back in the queue. */
+export type RequeueResult = 'requeued' | 'superseded' | 'lease_lost';
+
+/** The partial unique index that allows one pending job per issue. */
+const ONE_PENDING_JOB_PER_ISSUE = 'triage_jobs_one_pending_per_issue_key';
+
+/** Postgres error 23505 on the given constraint, wherever it sits in the error's cause chain. */
+function isUniqueViolation(error: unknown, constraint: string): boolean {
+  for (let current = error; current instanceof Error; current = current.cause) {
+    const { code, constraint: name } = current as { code?: unknown; constraint?: unknown };
+    if (code === '23505' && name === constraint) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Sets a running job back to pending. If the issue changed while the job ran, a newer job may
+ * already be pending for it, and the unique index refuses a second one. That newer job will read
+ * the latest issue text, so this one is cancelled as superseded rather than run twice.
+ *
+ * Must not run inside a transaction: on Postgres the refused update would abort it.
+ */
+async function requeue(db: Database, lease: Lease, set: JobUpdate): Promise<RequeueResult> {
+  try {
+    return (await updateLeased(db, lease, { ...releaseLease, ...set, status: 'pending' }))
+      ? 'requeued'
+      : 'lease_lost';
+  } catch (error) {
+    if (!isUniqueViolation(error, ONE_PENDING_JOB_PER_ISSUE)) {
+      throw error;
+    }
+    const reason = 'Superseded by a newer job for the same issue';
+    return (await cancelTriageJob(db, lease, reason)) ? 'superseded' : 'lease_lost';
+  }
+}
+
+/** Longest delay a retry is scheduled for, whatever a provider asks. */
+export const MAX_RETRY_DELAY_MS = 6 * 60 * 60 * 1000;
+
+/** Puts a job back in the queue to run again after `delayMs` (capped at six hours). */
 export function scheduleTriageRetry(
-  tx: Executor,
+  db: Database,
   lease: Lease,
   { error, delayMs }: { error: string; delayMs: number },
-): Promise<boolean> {
-  return updateLeased(tx, lease, {
-    ...releaseLease,
-    status: 'pending',
+): Promise<RequeueResult> {
+  const delay = Math.min(MAX_RETRY_DELAY_MS, Math.max(0, Math.ceil(delayMs)));
+  return requeue(db, lease, {
     lastError: truncateError(error),
-    runAfter: sql`now() + ${Math.ceil(delayMs)}::integer * interval '1 millisecond'`,
+    runAfter: sql`now() + ${delay}::integer * interval '1 millisecond'`,
   });
 }
 
@@ -213,10 +253,8 @@ export function cancelTriageJob(tx: Executor, lease: Lease, reason: string): Pro
  * Returns a job to the queue without counting the attempt, for a worker that is shutting down
  * and interrupted the job itself. The job is due again immediately.
  */
-export function releaseTriageJob(tx: Executor, lease: Lease): Promise<boolean> {
-  return updateLeased(tx, lease, {
-    ...releaseLease,
-    status: 'pending',
+export function releaseTriageJob(db: Database, lease: Lease): Promise<RequeueResult> {
+  return requeue(db, lease, {
     attempts: sql`greatest(${triageJobs.attempts} - 1, 0)`,
     runAfter: sql`now()`,
   });

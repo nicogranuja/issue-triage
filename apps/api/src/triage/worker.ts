@@ -182,8 +182,8 @@ export class TriageWorker {
     const { db, maxAttempts, jobTimeoutMs } = this.#options;
     try {
       if (this.#interrupt.signal.aborted && !timedOut) {
-        await releaseTriageJob(db, job);
-        log.info('triage job interrupted by shutdown and released');
+        const result = await releaseTriageJob(db, job);
+        log.info({ result }, 'triage job interrupted by shutdown');
         return;
       }
       const failure = classify(error, timedOut ? jobTimeoutMs : null);
@@ -192,8 +192,8 @@ export class TriageWorker {
           retryDelayMs(job.attempts, this.#backoff, this.#random),
           failure.retryAfterMs ?? 0,
         );
-        await scheduleTriageRetry(db, job, { error: failure.message, delayMs });
-        log.warn({ err: error, delayMs }, 'triage job failed; will retry');
+        const result = await scheduleTriageRetry(db, job, { error: failure.message, delayMs });
+        log.warn({ err: error, delayMs, result }, 'triage job failed; will retry');
       } else {
         await failTriageJob(db, job, failure.message);
         log.error({ err: error, retryable: failure.retryable }, 'triage job failed');
