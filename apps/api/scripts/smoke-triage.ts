@@ -1,7 +1,7 @@
 /**
  * Makes one real triage call to check credentials and the model end to end (`npm run
- * smoke:triage`). It costs a fraction of a cent, needs no database or GitHub access, and does
- * nothing unless credentials are set, so it is never run in CI.
+ * smoke:triage`). It costs a few cents, needs no database or GitHub access, and does nothing
+ * unless credentials are set, so it is never run in CI.
  *
  *   ANTHROPIC_API_KEY=... npm run smoke:triage
  *   TRIAGE_PROVIDER=bedrock AWS_REGION=us-east-1 AWS_PROFILE=... npm run smoke:triage
