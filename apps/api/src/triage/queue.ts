@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, lte, or, sql } from 'drizzle-orm';
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 
 import type { Database, Transaction } from '../db/client.js';
 import { triageJobs } from '../db/schema.js';
@@ -131,7 +132,7 @@ export async function claimTriageJob(
   return { ...claimed, leaseToken, lockedUntil };
 }
 
-type JobUpdate = Partial<typeof triageJobs.$inferInsert>;
+type JobUpdate = PgUpdateSetSource<typeof triageJobs>;
 
 /**
  * Applies an update only while the caller still holds the lease. Returns false when the lease
