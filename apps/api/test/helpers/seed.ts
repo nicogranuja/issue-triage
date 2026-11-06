@@ -1,5 +1,7 @@
+import { eq } from 'drizzle-orm';
+
 import type { Database } from '../../src/db/client.js';
-import { issues, repositories, triageSuggestions } from '../../src/db/schema.js';
+import { issues, repositories, reviews, triageSuggestions } from '../../src/db/schema.js';
 
 type RepositoryRow = typeof repositories.$inferSelect;
 type IssueRow = typeof issues.$inferSelect;
@@ -94,6 +96,34 @@ export async function seedSuggestion(
     .returning();
   if (!row) {
     throw new Error('Suggestion insert returned no row');
+  }
+  return row;
+}
+
+/** Inserts a review of a suggestion, and marks the suggestion reviewed. */
+export async function seedReview(
+  db: Database,
+  suggestionId: number,
+  overrides: Partial<typeof reviews.$inferInsert> = {},
+): Promise<typeof reviews.$inferSelect> {
+  await db
+    .update(triageSuggestions)
+    .set({ status: 'reviewed' })
+    .where(eq(triageSuggestions.id, suggestionId));
+  const [row] = await db
+    .insert(reviews)
+    .values({
+      suggestionId,
+      decision: 'accepted',
+      labels: ['bug'],
+      priority: 'medium',
+      labelsAdded: ['bug'],
+      reviewerLogin: 'local',
+      ...overrides,
+    })
+    .returning();
+  if (!row) {
+    throw new Error('Review insert returned no row');
   }
   return row;
 }

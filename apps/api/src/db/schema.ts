@@ -1,11 +1,13 @@
 import {
   ISSUE_REMOVAL_REASONS,
   ISSUE_STATES,
+  JOB_KINDS,
   PRIORITIES,
   REVIEW_DECISIONS,
   SUGGESTION_STATUSES,
   TRIAGE_JOB_STATUSES,
   type DuplicateCandidate,
+  type WriteBackResult,
 } from '@issue-triage/shared';
 import { sql } from 'drizzle-orm';
 import {
@@ -40,6 +42,7 @@ export const suggestionStatus = pgEnum('suggestion_status', SUGGESTION_STATUSES)
 export const reviewDecision = pgEnum('review_decision', REVIEW_DECISIONS);
 export const webhookDeliveryOutcome = pgEnum('webhook_delivery_outcome', ['processed', 'ignored']);
 export const triageJobStatus = pgEnum('triage_job_status', TRIAGE_JOB_STATUSES);
+export const jobKind = pgEnum('job_kind', JOB_KINDS);
 
 /**
  * Repositories we have received events for. Keyed internally by a surrogate id; `github_id` is
@@ -106,10 +109,14 @@ export const issues = pgTable(
 );
 
 /**
- * The triage work queue. Workers claim jobs with `FOR UPDATE SKIP LOCKED` and hold a lease while
- * they run; a job whose lease expires (its worker crashed or hung) can be claimed again. Every
- * claim issues a fresh `lease_token`, and a worker can only finish a job while it still holds the
- * matching token, so a worker that lost its lease can never overwrite the result of the next one.
+ * The work queue: triage jobs, and write-back jobs that apply a review to GitHub. Workers claim
+ * jobs with `FOR UPDATE SKIP LOCKED` and hold a lease while they run; a job whose lease expires
+ * (its worker crashed or hung) can be claimed again. Every claim issues a fresh `lease_token`, and
+ * a worker can only finish a job while it still holds the matching token, so a worker that lost
+ * its lease can never overwrite the result of the next one.
+ *
+ * A write-back job is inserted in the transaction that records its review (`review_id`), so an
+ * accepted review is never stored without the job that applies it: an outbox on this queue.
  */
 export const triageJobs = pgTable(
   'triage_jobs',
@@ -118,6 +125,11 @@ export const triageJobs = pgTable(
     issueId: bigint('issue_id', { mode: 'number' })
       .notNull()
       .references(() => issues.id, { onDelete: 'cascade' }),
+    kind: jobKind('kind').notNull().default('triage'),
+    /** The review a write-back job applies. Set exactly for write-back jobs. */
+    reviewId: bigint('review_id', { mode: 'number' }).references((): AnyPgColumn => reviews.id, {
+      onDelete: 'cascade',
+    }),
     status: triageJobStatus('status').notNull().default('pending'),
     /** How many times the job has been claimed, including the current run. */
     attempts: integer('attempts').notNull().default(0),
@@ -128,16 +140,20 @@ export const triageJobs = pgTable(
     lockedBy: text('locked_by'),
     lockedUntil: timestamptz('locked_until'),
     lastError: text('last_error'),
+    /** What a finished write-back job changed on GitHub. */
+    result: jsonb('result').$type<WriteBackResult>(),
     finishedAt: timestamptz('finished_at'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
-    // At most one pending job per issue: enqueueing again while one waits is a no-op, and the
-    // waiting job reads the latest issue text when it runs.
+    // At most one pending triage job per issue: enqueueing again while one waits is a no-op, and
+    // the waiting job reads the latest issue text when it runs.
     uniqueIndex('triage_jobs_one_pending_per_issue_key')
       .on(t.issueId)
-      .where(sql`${t.status} = 'pending'`),
+      .where(sql`${t.status} = 'pending' and ${t.kind} = 'triage'`),
+    // One write-back job per review, ever: retries reuse the job instead of adding another.
+    uniqueIndex('triage_jobs_review_id_key').on(t.reviewId),
     // The two ways a job becomes claimable: pending and due, or running with an expired lease.
     index('triage_jobs_pending_run_after_idx')
       .on(t.runAfter)
@@ -148,6 +164,10 @@ export const triageJobs = pgTable(
     // Also serves the issue_id foreign key.
     index('triage_jobs_issue_id_idx').on(t.issueId),
     check('triage_jobs_attempts_non_negative', sql`${t.attempts} >= 0`),
+    check(
+      'triage_jobs_write_back_has_review',
+      sql`(${t.kind} = 'write_back') = (${t.reviewId} is not null)`,
+    ),
     check(
       'triage_jobs_running_has_lease',
       sql`(${t.status} = 'running') = (${t.leaseToken} is not null and ${t.lockedUntil} is not null)`,
@@ -215,7 +235,15 @@ export const triageSuggestions = pgTable(
   ],
 );
 
-/** A reviewer's decision on a suggestion, and the labels and priority they settled on. */
+/**
+ * A reviewer's decision on a suggestion. `labels` and `priority` are what the reviewer settled on
+ * (null for a rejection): the ground truth evals compare suggestions against.
+ *
+ * `labels_added` and `labels_removed` are the change to write to GitHub, worked out against the
+ * issue's labels when the review was made. Storing the change rather than a final label set means
+ * the write-back never undoes a label someone else changed on GitHub in the meantime, and a label
+ * is only ever removed because the reviewer removed it.
+ */
 export const reviews = pgTable('reviews', {
   id: id(),
   suggestionId: bigint('suggestion_id', { mode: 'number' })
@@ -225,6 +253,16 @@ export const reviews = pgTable('reviews', {
   decision: reviewDecision('decision').notNull(),
   labels: text('labels').array(),
   priority: priority('priority'),
+  labelsAdded: text('labels_added')
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
+  labelsRemoved: text('labels_removed')
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
+  note: text('note'),
+  /** Who reviewed. Until sign-in exists (roadmap: auth), every review is by `local`. */
   reviewerLogin: text('reviewer_login').notNull(),
   createdAt: createdAt(),
 });

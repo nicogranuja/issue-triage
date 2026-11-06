@@ -2,13 +2,20 @@ import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { DatabaseHandle } from '../../src/db/client.js';
-import { issues, repositories, triageJobs } from '../../src/db/schema.js';
+import {
+  issues,
+  repositories,
+  reviews,
+  triageJobs,
+  triageSuggestions,
+} from '../../src/db/schema.js';
 import {
   cancelJob,
   cancelJobsForIssue,
   claimJob,
   completeJob,
   enqueueTriageJob,
+  enqueueWriteBackJob,
   failJob,
   releaseJob,
   retryDelayMs,
@@ -17,7 +24,7 @@ import {
   type ClaimedJob,
 } from '../../src/triage/queue.js';
 import { createMigratedTestDatabase } from '../helpers/database.js';
-import { seedIssue, seedRepository } from '../helpers/seed.js';
+import { seedIssue, seedRepository, seedReview, seedSuggestion } from '../helpers/seed.js';
 
 const claimOptions = { workerId: 'test-worker', leaseMs: 60_000 };
 
@@ -34,7 +41,7 @@ describe('triage job queue', () => {
 
   beforeEach(async () => {
     await database.db.execute(
-      sql`truncate ${triageJobs}, ${issues}, ${repositories} restart identity cascade`,
+      sql`truncate ${triageJobs}, ${reviews}, ${triageSuggestions}, ${issues}, ${repositories} restart identity cascade`,
     );
   });
 
@@ -387,6 +394,92 @@ describe('triage job queue', () => {
         [issueId, 'cancelled'],
         [otherIssueId, 'pending'],
       ]);
+    });
+  });
+
+  describe('write-back jobs', () => {
+    async function reviewFor(issueId: number): Promise<number> {
+      const suggestion = await seedSuggestion(db(), issueId);
+      return (await seedReview(db(), suggestion.id)).id;
+    }
+
+    it('waits out the undo delay before it can be claimed', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      const reviewId = await reviewFor(issueId);
+
+      const { jobId, runAfter } = await enqueueWriteBackJob(db(), {
+        issueId,
+        reviewId,
+        delayMs: 60_000,
+      });
+
+      expect(runAfter.getTime()).toBeGreaterThan(Date.now() + 50_000);
+      expect(await claimJob(db(), claimOptions)).toBeNull();
+      await backdate(jobId, 'run_after');
+      expect(await claim()).toMatchObject({ jobId, kind: 'write_back', issueId, reviewId });
+    });
+
+    it('lives alongside a pending triage job for the same issue', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      await enqueueTriageJob(db(), issueId);
+      const reviewId = await reviewFor(issueId);
+      await enqueueWriteBackJob(db(), { issueId, reviewId, delayMs: 0 });
+
+      // Different kinds don't wait for each other.
+      const first = await claim();
+      const second = await claim();
+      expect([first.kind, second.kind].sort()).toEqual(['triage', 'write_back']);
+    });
+
+    it('allows one write-back job per review', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      const reviewId = await reviewFor(issueId);
+      await enqueueWriteBackJob(db(), { issueId, reviewId, delayMs: 0 });
+
+      await expect(enqueueWriteBackJob(db(), { issueId, reviewId, delayMs: 0 })).rejects.toThrow();
+    });
+
+    it('runs one write-back per issue at a time', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      const firstReview = await reviewFor(issueId);
+      const secondReview = await reviewFor(issueId);
+      await enqueueWriteBackJob(db(), { issueId, reviewId: firstReview, delayMs: 0 });
+      await enqueueWriteBackJob(db(), { issueId, reviewId: secondReview, delayMs: 0 });
+
+      const running = await claim();
+      expect(running.reviewId).toBe(firstReview);
+      expect(await claimJob(db(), claimOptions)).toBeNull();
+      await completeJob(db(), running, { added: [], removed: [], skipped: [], dryRun: false });
+      expect((await claim()).reviewId).toBe(secondReview);
+    });
+
+    it('claims only the kinds a worker asks for', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      const reviewId = await reviewFor(issueId);
+      await enqueueWriteBackJob(db(), { issueId, reviewId, delayMs: 0 });
+
+      expect(await claimJob(db(), { ...claimOptions, kinds: ['triage'] })).toBeNull();
+      expect(await claimJob(db(), { ...claimOptions, kinds: ['write_back'] })).toMatchObject({
+        kind: 'write_back',
+      });
+    });
+
+    it('stores what a finished job changed', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      const reviewId = await reviewFor(issueId);
+      await enqueueWriteBackJob(db(), { issueId, reviewId, delayMs: 0 });
+      const claimed = await claim();
+      const result = { added: ['bug'], removed: [], skipped: ['gone'], dryRun: false };
+
+      expect(await completeJob(db(), claimed, result)).toBe(true);
+      expect(await job(claimed.jobId)).toMatchObject({ status: 'succeeded', result });
+    });
+
+    it('refuses a write-back job without a review', async () => {
+      const [issueId = 0] = await seedIssues(1);
+      await expect(
+        db().insert(triageJobs).values({ issueId, kind: 'write_back' }),
+      ).rejects.toThrow();
     });
   });
 });

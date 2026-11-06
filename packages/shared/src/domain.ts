@@ -40,6 +40,14 @@ export const TRIAGE_JOB_STATUSES = [
 ] as const;
 export type TriageJobStatus = (typeof TRIAGE_JOB_STATUSES)[number];
 
+/**
+ * What a queued job does. `triage` asks the model for a suggestion; `write_back` applies a
+ * reviewed suggestion's labels to the issue on GitHub. Both share one queue table, so a review
+ * and its write-back job commit in the same transaction (an outbox).
+ */
+export const JOB_KINDS = ['triage', 'write_back'] as const;
+export type JobKind = (typeof JOB_KINDS)[number];
+
 /** What a reviewer did with a suggestion. */
 export const REVIEW_DECISIONS = ['accepted', 'edited', 'rejected'] as const;
 export type ReviewDecision = (typeof REVIEW_DECISIONS)[number];
@@ -50,4 +58,16 @@ export interface DuplicateCandidate {
   issueId: number;
   /** Why the issues look like duplicates, shown to the reviewer. */
   reason: string;
+}
+
+/** What a write-back job did to the issue's labels on GitHub. */
+export interface WriteBackResult {
+  /** Labels added to the issue. */
+  added: string[];
+  /** Labels removed from the issue. */
+  removed: string[];
+  /** Labels the review asked for that no longer exist in the repository, so were not applied. */
+  skipped: string[];
+  /** True when the job only planned the change (`WRITE_BACK_MODE=dry-run`) and wrote nothing. */
+  dryRun: boolean;
 }

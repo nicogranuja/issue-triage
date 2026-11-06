@@ -1,3 +1,4 @@
+import type { JobKind, WriteBackResult } from '@issue-triage/shared';
 import { and, asc, eq, gt, inArray, lte, notExists, or, sql } from 'drizzle-orm';
 import { alias, type PgUpdateSetSource } from 'drizzle-orm/pg-core';
 
@@ -5,7 +6,8 @@ import type { Database, Transaction } from '../db/client.js';
 import { triageJobs } from '../db/schema.js';
 
 /**
- * A Postgres-backed job queue for triage work.
+ * A Postgres-backed job queue. It carries two kinds of job: `triage` (ask the model for a
+ * suggestion) and `write_back` (apply a review's labels to GitHub).
  *
  * Why Postgres and not a broker: jobs are created by the same transaction that stores the webhook
  * event, so an issue can never be saved without its job (or the other way round), and there is
@@ -27,7 +29,10 @@ export interface Lease {
 }
 
 export interface ClaimedJob extends Lease {
+  kind: JobKind;
   issueId: number;
+  /** The review to apply; set for write-back jobs. */
+  reviewId: number | null;
   /** Claims so far, including this one. */
   attempts: number;
   lockedUntil: Date;
@@ -38,6 +43,8 @@ export interface ClaimOptions {
   workerId: string;
   /** How long the claim is valid. It must outlast the longest possible run of a job. */
   leaseMs: number;
+  /** Kinds of job this worker runs. Defaults to all of them. */
+  kinds?: readonly JobKind[];
 }
 
 /**
@@ -51,10 +58,11 @@ export interface ClaimOptions {
 export async function enqueueTriageJob(tx: Executor, issueId: number): Promise<boolean> {
   const inserted = await tx
     .insert(triageJobs)
-    .values({ issueId })
+    .values({ issueId, kind: 'triage' })
     .onConflictDoNothing({
       target: triageJobs.issueId,
-      where: sql`${triageJobs.status} = 'pending'`,
+      // Must match the predicate of triage_jobs_one_pending_per_issue_key.
+      where: sql`${triageJobs.status} = 'pending' and ${triageJobs.kind} = 'triage'`,
     })
     .returning({ id: triageJobs.id });
   if (inserted.length > 0) {
@@ -63,15 +71,48 @@ export async function enqueueTriageJob(tx: Executor, issueId: number): Promise<b
   await tx
     .update(triageJobs)
     .set({ attempts: 0, updatedAt: sql`now()` })
-    .where(and(eq(triageJobs.issueId, issueId), eq(triageJobs.status, 'pending')));
+    .where(
+      and(
+        eq(triageJobs.issueId, issueId),
+        eq(triageJobs.status, 'pending'),
+        eq(triageJobs.kind, 'triage'),
+      ),
+    );
   return false;
 }
 
 /**
+ * Adds the job that writes a review back to GitHub. Call it in the transaction that records the
+ * review: the two commit together, so a crash can never leave an accepted review without its
+ * write-back (the transactional outbox pattern). The job waits `delayMs` before it is due, which
+ * is the window in which the reviewer can still undo.
+ */
+export async function enqueueWriteBackJob(
+  tx: Executor,
+  { issueId, reviewId, delayMs }: { issueId: number; reviewId: number; delayMs: number },
+): Promise<{ jobId: number; runAfter: Date }> {
+  const [job] = await tx
+    .insert(triageJobs)
+    .values({
+      kind: 'write_back',
+      issueId,
+      reviewId,
+      runAfter: sql`now() + ${Math.max(0, Math.ceil(delayMs))}::integer * interval '1 millisecond'`,
+    })
+    .returning({ jobId: triageJobs.id, runAfter: triageJobs.runAfter });
+  if (!job) {
+    throw new Error(`Insert returned no write-back job for review ${reviewId}`);
+  }
+  return job;
+}
+
+/**
  * Claims the next due job, or returns null when there is none. A job is due when it is pending,
- * its `run_after` has passed, and no other job for the same issue is running; or when it is
- * running but its lease expired. One job per issue at a time means an older run, which read the
- * issue before an edit, can never finish after the newer run and replace its suggestion.
+ * its `run_after` has passed, and no other job of the same kind for the same issue is running; or
+ * when it is running but its lease expired. One triage job per issue at a time means an older
+ * run, which read the issue before an edit, can never finish after the newer run and replace its
+ * suggestion; one write-back per issue at a time keeps two reviews from interleaving their label
+ * changes.
  *
  * This is one statement, equivalent to:
  *
@@ -96,7 +137,7 @@ export async function enqueueTriageJob(tx: Executor, issueId: number): Promise<b
  */
 export async function claimJob(
   db: Executor,
-  { workerId, leaseMs }: ClaimOptions,
+  { workerId, leaseMs, kinds }: ClaimOptions,
 ): Promise<ClaimedJob | null> {
   const running = alias(triageJobs, 'running');
   const next = db.$with('next').as(
@@ -104,24 +145,28 @@ export async function claimJob(
       .select({ id: triageJobs.id })
       .from(triageJobs)
       .where(
-        or(
-          and(
-            eq(triageJobs.status, 'pending'),
-            lte(triageJobs.runAfter, sql`now()`),
-            notExists(
-              db
-                .select({ id: running.id })
-                .from(running)
-                .where(
-                  and(
-                    eq(running.issueId, triageJobs.issueId),
-                    eq(running.status, 'running'),
-                    gt(running.lockedUntil, sql`now()`),
+        and(
+          kinds ? inArray(triageJobs.kind, [...kinds]) : undefined,
+          or(
+            and(
+              eq(triageJobs.status, 'pending'),
+              lte(triageJobs.runAfter, sql`now()`),
+              notExists(
+                db
+                  .select({ id: running.id })
+                  .from(running)
+                  .where(
+                    and(
+                      eq(running.issueId, triageJobs.issueId),
+                      eq(running.kind, triageJobs.kind),
+                      eq(running.status, 'running'),
+                      gt(running.lockedUntil, sql`now()`),
+                    ),
                   ),
-                ),
+              ),
             ),
+            and(eq(triageJobs.status, 'running'), lte(triageJobs.lockedUntil, sql`now()`)),
           ),
-          and(eq(triageJobs.status, 'running'), lte(triageJobs.lockedUntil, sql`now()`)),
         ),
       )
       .orderBy(asc(triageJobs.runAfter), asc(triageJobs.id))
@@ -144,7 +189,9 @@ export async function claimJob(
     .where(eq(triageJobs.id, next.id))
     .returning({
       jobId: triageJobs.id,
+      kind: triageJobs.kind,
       issueId: triageJobs.issueId,
+      reviewId: triageJobs.reviewId,
       attempts: triageJobs.attempts,
       leaseToken: triageJobs.leaseToken,
       lockedUntil: triageJobs.lockedUntil,
@@ -205,11 +252,15 @@ function truncateError(message: string): string {
  * The lease must also be unexpired: once it expires, a newer job for the issue may start, and a
  * late result from this one must not land after it.
  */
-export function completeJob(tx: Executor, lease: Lease): Promise<boolean> {
+export function completeJob(
+  tx: Executor,
+  lease: Lease,
+  result: WriteBackResult | null = null,
+): Promise<boolean> {
   return updateLeased(
     tx,
     lease,
-    { ...releaseLease, status: 'succeeded', lastError: null, finishedAt: sql`now()` },
+    { ...releaseLease, status: 'succeeded', lastError: null, result, finishedAt: sql`now()` },
     { unexpired: true },
   );
 }
