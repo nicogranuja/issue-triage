@@ -270,7 +270,7 @@ function toReview(row: ReviewRow): Review {
             finishedAt: row.jobFinishedAt?.toISOString() ?? null,
           },
     undoable,
-    undoWindowMs: hasJob && undoable ? Number(row.jobMsLeft ?? 0) : null,
+    undoWindowMs: hasJob && undoable ? (row.jobMsLeft ?? 0) : null,
   };
 }
 
