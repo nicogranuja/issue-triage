@@ -41,6 +41,11 @@ export default defineConfig(
   {
     files: ['apps/web/**/*.{ts,tsx}'],
     extends: [reactHooks.configs.flat.recommended],
+  },
+
+  {
+    // Tests may read innerHTML to check what was rendered; the app itself never writes HTML.
+    files: ['apps/web/src/**/*.{ts,tsx}'],
     rules: {
       // Issue text and model output are untrusted: they are only ever rendered as text.
       'no-restricted-syntax': [
