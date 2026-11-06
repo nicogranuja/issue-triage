@@ -88,6 +88,8 @@ export const queueItemSchema = z.object({
     title: z.string(),
     htmlUrl: z.string(),
     labels: z.array(z.string()),
+    /** When the issue was opened on GitHub. */
+    openedAt: timestamp,
   }),
   /** Suggested labels. */
   labels: z.array(z.string()),
