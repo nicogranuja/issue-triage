@@ -41,6 +41,24 @@ export default defineConfig(
   {
     files: ['apps/web/**/*.{ts,tsx}'],
     extends: [reactHooks.configs.flat.recommended],
+    rules: {
+      // Issue text and model output are untrusted: they are only ever rendered as text.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']",
+          message: 'Render untrusted text as text. Never inject HTML.',
+        },
+        {
+          selector: 'MemberExpression[property.name=/^(innerHTML|outerHTML)$/]',
+          message: 'Render untrusted text as text. Never inject HTML.',
+        },
+        {
+          selector: "CallExpression[callee.property.name='insertAdjacentHTML']",
+          message: 'Render untrusted text as text. Never inject HTML.',
+        },
+      ],
+    },
   },
 
   // Must stay last: turns off stylistic rules that Prettier owns.
