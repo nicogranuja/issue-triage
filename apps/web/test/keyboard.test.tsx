@@ -128,6 +128,7 @@ describe('keyboard shortcuts', () => {
           body: {
             decision: 'edit',
             labels: ['bug', 'regression'],
+            baseLabels: ['needs triage'],
             priority: 'urgent',
             note: 'Seen twice',
           },

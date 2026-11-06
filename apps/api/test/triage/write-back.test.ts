@@ -168,7 +168,11 @@ describe('write-back jobs', () => {
   });
 
   it('removes only labels the reviewer removed, and leaves labels added on GitHub since', async () => {
-    const { github } = await reviewed({ decision: 'edit', labels: ['bug'] });
+    const { github } = await reviewed({
+      decision: 'edit',
+      labels: ['bug'],
+      baseLabels: ['needs triage'],
+    });
     github.issueLabels.set(ISSUE, ['needs triage', 'added-meanwhile']);
     github.repositoryLabels.add('added-meanwhile');
 
@@ -185,7 +189,12 @@ describe('write-back jobs', () => {
 
   it('writes the priority label when one is mapped', async () => {
     const { github } = await reviewed(
-      { decision: 'edit', labels: ['needs triage'], priority: 'high' },
+      {
+        decision: 'edit',
+        labels: ['needs triage'],
+        baseLabels: ['needs triage'],
+        priority: 'high',
+      },
       { priorityLabels: { high: 'regression' } },
     );
 
@@ -194,7 +203,11 @@ describe('write-back jobs', () => {
   });
 
   it('is idempotent: a run whose result was lost changes nothing when it runs again', async () => {
-    const { github } = await reviewed({ decision: 'edit', labels: ['bug'] });
+    const { github } = await reviewed({
+      decision: 'edit',
+      labels: ['bug'],
+      baseLabels: ['needs triage'],
+    });
     // The first run's lease expires while its GitHub calls are in flight, as if the worker hung;
     // the calls land, but it may no longer record the result.
     github.beforeAnswer = async (call) => {
@@ -224,7 +237,11 @@ describe('write-back jobs', () => {
   });
 
   it('treats a label removed by someone else mid-run as removed', async () => {
-    const { github } = await reviewed({ decision: 'edit', labels: ['bug'] });
+    const { github } = await reviewed({
+      decision: 'edit',
+      labels: ['bug'],
+      baseLabels: ['needs triage'],
+    });
     github.failNext('DELETE', /labels\/needs%20triage$/, {
       status: 404,
       body: { message: 'Label does not exist' },
@@ -295,7 +312,11 @@ describe('write-back jobs', () => {
   });
 
   it('calls nothing in dry-run mode, and records the change it would make', async () => {
-    const { github } = await reviewed({ decision: 'edit', labels: ['bug'] });
+    const { github } = await reviewed({
+      decision: 'edit',
+      labels: ['bug'],
+      baseLabels: ['needs triage'],
+    });
 
     await workerFor(github, 'dry-run').runNext();
 

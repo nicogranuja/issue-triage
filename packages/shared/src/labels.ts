@@ -29,6 +29,12 @@ export interface LabelChangeInput {
    * which only ever adds.
    */
   removeUnlisted: boolean;
+  /**
+   * With `removeUnlisted`: the labels the reviewer saw on the issue when they edited it. Only
+   * these can be removed; a label added to the issue since then is kept, because the reviewer
+   * never had the chance to keep it. Defaults to `current`.
+   */
+  seen?: readonly string[] | undefined;
   /** The label for the chosen priority, if one is mapped. It is added, and never removed. */
   priorityLabel?: string | undefined;
 }
@@ -58,13 +64,14 @@ export function uniqueLabels(names: Iterable<string>): string[] {
  * what will be written.
  *
  * Accepting a suggestion only adds labels. Labels are removed only in an edit, and only those the
- * reviewer explicitly took off. Choosing a priority adds its mapped label but does not remove the
+ * reviewer saw on the issue and explicitly took off. Choosing a priority adds its mapped label but does not remove the
  * labels of other priorities: that would be a removal the reviewer never made.
  */
 export function planLabelChange({
   current,
   target,
   removeUnlisted,
+  seen,
   priorityLabel,
 }: LabelChangeInput): LabelChange {
   const currentLabels = uniqueLabels(current);
@@ -73,8 +80,11 @@ export function planLabelChange({
   const wantedKeys = new Set(wanted.map(labelKey));
 
   const add = wanted.filter((name) => !currentKeys.has(labelKey(name)));
+  const seenKeys = new Set((seen ?? current).map(labelKey));
   const remove = removeUnlisted
-    ? currentLabels.filter((name) => !wantedKeys.has(labelKey(name)))
+    ? currentLabels.filter(
+        (name) => seenKeys.has(labelKey(name)) && !wantedKeys.has(labelKey(name)),
+      )
     : [];
   const removeKeys = new Set(remove.map(labelKey));
   const keep = currentLabels.filter((name) => !removeKeys.has(labelKey(name)));

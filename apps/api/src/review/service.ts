@@ -181,6 +181,9 @@ export async function submitReview(
       current: suggestion.issueLabels,
       target: edit?.labels ? canonicalLabels(edit.labels, suggestion) : suggestion.labels,
       removeUnlisted: edit?.labels !== undefined,
+      // The issue's labels may have changed since the reviewer loaded it (label webhooks don't
+      // supersede a suggestion): only labels they saw can be removed.
+      seen: edit?.baseLabels,
       priorityLabel: priorityLabels[priority],
     });
 

@@ -144,14 +144,14 @@ text chosen by whoever opened the issue, so they are rendered as plain text only
 or markdown (lint forbids `dangerouslySetInnerHTML` and friends in the app). Links are rendered
 only for `http(s)` URLs, and label colors are used only when they are hex.
 
-| Endpoint                             | What it does                                                  |
-| ------------------------------------ | ------------------------------------------------------------- |
-| `GET /api/queue`                     | `?repo=&priority=&confidence=&cursor=&limit=`, keyset-paged   |
-| `GET /api/suggestions/:id`           | Issue, suggestion, duplicates, repository labels, review      |
-| `POST /api/suggestions/:id/review`   | `{decision: accept\|edit\|reject, labels?, priority?, note?}` |
-| `DELETE /api/suggestions/:id/review` | Undo, while the write-back has not started                    |
-| `GET /api/reviews`                   | Recent reviews and the state of their write-back              |
-| `GET /api/repositories`              | Repositories, with how many suggestions await review          |
+| Endpoint                             | What it does                                                               |
+| ------------------------------------ | -------------------------------------------------------------------------- |
+| `GET /api/queue`                     | `?repo=&priority=&confidence=&cursor=&limit=`, keyset-paged                |
+| `GET /api/suggestions/:id`           | Issue, suggestion, duplicates, repository labels, review                   |
+| `POST /api/suggestions/:id/review`   | `{decision: accept\|edit\|reject, labels?, baseLabels?, priority?, note?}` |
+| `DELETE /api/suggestions/:id/review` | Undo, while the write-back has not started                                 |
+| `GET /api/reviews`                   | Recent reviews and the state of their write-back                           |
+| `GET /api/repositories`              | Repositories, with how many suggestions await review                       |
 
 ## Write-back to GitHub
 
@@ -163,7 +163,8 @@ A write-back job turns a review into label changes on the issue:
   labels that still exist, in the repository's spelling, and records the rest as skipped.
 - **Nothing is removed by accident.** The review stores a change (labels to add, labels to
   remove), worked out when the reviewer decided. Accepting only adds. A label is removed only
-  if the reviewer unticked it in an edit. Labels someone else changed on GitHub in the
+  if the reviewer saw it on the issue and unticked it in an edit (the edit says which labels it
+  was based on, so one added on GitHub while the reviewer was editing is kept). Labels someone else changed on GitHub in the
   meantime are left alone.
 - **Idempotent by construction.** The job is diff-based: it re-reads the issue's labels, adds
   the missing ones in one call, and deletes only removed labels the issue still has (a 404 from

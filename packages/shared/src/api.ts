@@ -216,16 +216,27 @@ const noteSchema = z.string().trim().max(2000);
 /**
  * Body of `POST /api/suggestions/:id/review`. `accept` applies the suggestion as it is; `edit`
  * applies the reviewer's labels and priority (the labels are the full set the issue should have,
- * so an unticked current label is removed); `reject` records the decision and writes nothing.
+ * so an unticked label from `baseLabels` is removed); `reject` records the decision and writes
+ * nothing.
  */
 export const reviewRequestSchema = z.discriminatedUnion('decision', [
   z.strictObject({ decision: z.literal('accept'), note: noteSchema.optional() }),
-  z.strictObject({
-    decision: z.literal('edit'),
-    labels: z.array(labelName).max(100).optional(),
-    priority: z.enum(PRIORITIES).optional(),
-    note: noteSchema.optional(),
-  }),
+  z
+    .strictObject({
+      decision: z.literal('edit'),
+      labels: z.array(labelName).max(100).optional(),
+      /**
+       * The issue's labels as the reviewer saw them; required with `labels`. Only these can be
+       * removed, so a label added on GitHub while the reviewer was editing survives.
+       */
+      baseLabels: z.array(labelName).max(100).optional(),
+      priority: z.enum(PRIORITIES).optional(),
+      note: noteSchema.optional(),
+    })
+    .refine((edit) => (edit.labels === undefined) === (edit.baseLabels === undefined), {
+      message: 'labels and baseLabels go together',
+      path: ['baseLabels'],
+    }),
   z.strictObject({ decision: z.literal('reject'), note: noteSchema.optional() }),
 ]);
 export type ReviewRequest = z.input<typeof reviewRequestSchema>;

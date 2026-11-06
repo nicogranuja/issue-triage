@@ -33,6 +33,22 @@ describe('planLabelChange', () => {
     });
   });
 
+  it('only removes labels the reviewer saw', () => {
+    expect(
+      planLabelChange({
+        current: ['needs triage', 'added-since'],
+        target: ['bug'],
+        removeUnlisted: true,
+        seen: ['needs triage'],
+      }),
+    ).toEqual({
+      add: ['bug'],
+      remove: ['needs triage'],
+      keep: ['added-since'],
+      final: ['added-since', 'bug'],
+    });
+  });
+
   it('compares label names without regard to case, as GitHub does', () => {
     const change = planLabelChange({
       current: ['Bug'],

@@ -102,6 +102,7 @@ export function EditForm({
     onSubmit({
       decision: 'edit',
       labels: chosen,
+      baseLabels: detail.issue.labels,
       priority,
       ...(note.trim() !== '' && { note: note.trim() }),
     });

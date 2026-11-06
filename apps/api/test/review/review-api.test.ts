@@ -135,6 +135,7 @@ describe('review API', () => {
         decision: 'edit',
         // `regression` is spelled as the repository spells it; `needs triage` is unticked.
         labels: ['bug', 'regression'],
+        baseLabels: ['needs triage'],
         priority: 'high',
         note: '  Seen on two dashboards.  ',
       });
@@ -148,6 +149,28 @@ describe('review API', () => {
         labelsRemoved: ['needs triage'],
         note: 'Seen on two dashboards.',
         writeBack: { status: 'pending' },
+      });
+    });
+
+    it('never removes a label added to the issue after the reviewer opened it', async () => {
+      const { issue, suggestion } = await pendingSuggestion();
+      // A maintainer labels the issue on GitHub while the reviewer is editing; the webhook
+      // stores it, and the suggestion stays pending.
+      await db()
+        .update(issues)
+        .set({ labels: ['needs triage', 'Regression'] })
+        .where(eq(issues.id, issue.id));
+
+      const response = await review(suggestion.id, {
+        decision: 'edit',
+        labels: ['bug'],
+        baseLabels: ['needs triage'],
+      });
+
+      expect(reviewResponseSchema.parse(response.json()).review).toMatchObject({
+        labels: ['Regression', 'bug'],
+        labelsAdded: ['bug'],
+        labelsRemoved: ['needs triage'],
       });
     });
 
@@ -168,6 +191,7 @@ describe('review API', () => {
       const response = await review(suggestion.id, {
         decision: 'edit',
         labels: ['bug', 'made-up'],
+        baseLabels: ['needs triage'],
       });
 
       expect(response.statusCode).toBe(422);
@@ -286,7 +310,9 @@ describe('review API', () => {
         // Accepting takes the suggestion as it is; changing labels is an edit.
         { decision: 'accept', labels: ['bug'] },
         { decision: 'edit', priority: 'critical' },
-        { decision: 'edit', labels: [''] },
+        { decision: 'edit', labels: [''], baseLabels: [] },
+        // The labels an edit removes are worked out from the labels the reviewer saw.
+        { decision: 'edit', labels: ['bug'] },
         { decision: 'reject', note: 'x'.repeat(2001) },
       ]) {
         const response = await review(suggestion.id, body);
