@@ -8,11 +8,15 @@ import { signPayload } from '../../src/webhooks/signature.js';
 
 export const TEST_WEBHOOK_SECRET = 'test-webhook-secret-0123456789';
 
-export function createTestApp(database: DatabaseHandle): Promise<FastifyInstance> {
+export function createTestApp(
+  database: DatabaseHandle,
+  env: Record<string, string> = {},
+): Promise<FastifyInstance> {
   const config = loadConfig({
     GITHUB_WEBHOOK_SECRET: TEST_WEBHOOK_SECRET,
     LOG_LEVEL: 'silent',
     TRIAGE_PROVIDER: 'fake',
+    ...env,
   });
   return buildApp({ config, db: database.db, logger: pino({ level: 'silent' }) });
 }
