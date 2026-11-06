@@ -192,6 +192,11 @@ const reviewColumns = {
   jobLastError: triageJobs.lastError,
   jobResult: triageJobs.result,
   jobFinishedAt: triageJobs.finishedAt,
+  /** Set when a worker ever claimed the job (a released job keeps it). */
+  jobLockedBy: triageJobs.lockedBy,
+  jobMsLeft: sql<
+    number | null
+  >`ceil(greatest(0, extract(epoch from (${triageJobs.runAfter} - now())) * 1000))::integer`,
 };
 
 interface ReviewRow {
@@ -213,9 +218,31 @@ interface ReviewRow {
   jobLastError: string | null;
   jobResult: WriteBackResult | null;
   jobFinishedAt: Date | null;
+  jobLockedBy: string | null;
+  jobMsLeft: number | null;
+}
+
+/**
+ * Whether undo can still work: there is nothing to write, or the write-back has never been
+ * claimed by a worker. Must agree with `undoReview`.
+ */
+export function writeBackUntouched(job: {
+  status: string;
+  attempts: number;
+  lockedBy: string | null;
+}): boolean {
+  return job.status === 'pending' && job.attempts === 0 && job.lockedBy === null;
 }
 
 function toReview(row: ReviewRow): Review {
+  const hasJob = row.jobId !== null && row.jobStatus !== null && row.jobAttempts !== null;
+  const undoable =
+    !hasJob ||
+    writeBackUntouched({
+      status: row.jobStatus ?? '',
+      attempts: row.jobAttempts ?? 0,
+      lockedBy: row.jobLockedBy,
+    });
   return {
     id: row.id,
     suggestionId: row.suggestionId,
@@ -242,6 +269,8 @@ function toReview(row: ReviewRow): Review {
             result: row.jobResult,
             finishedAt: row.jobFinishedAt?.toISOString() ?? null,
           },
+    undoable,
+    undoWindowMs: hasJob && undoable ? Number(row.jobMsLeft ?? 0) : null,
   };
 }
 

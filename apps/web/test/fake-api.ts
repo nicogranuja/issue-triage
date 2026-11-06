@@ -160,6 +160,8 @@ function reviewFor(suggestionId: number, body: ReviewRequest): Review {
     note: null,
     reviewerLogin: 'local',
     createdAt: new Date().toISOString(),
+    undoable: true,
+    undoWindowMs: decision === 'rejected' ? null : 10_000,
     writeBack:
       decision === 'rejected'
         ? null

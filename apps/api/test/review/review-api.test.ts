@@ -16,7 +16,7 @@ import {
   triageJobs,
   triageSuggestions,
 } from '../../src/db/schema.js';
-import { claimJob, scheduleRetry } from '../../src/triage/queue.js';
+import { claimJob, releaseJob, scheduleRetry } from '../../src/triage/queue.js';
 import { createTestApp } from '../helpers/app.js';
 import { createMigratedTestDatabase, queryRows } from '../helpers/database.js';
 import { seedIssue, seedRepository, seedSuggestion } from '../helpers/seed.js';
@@ -213,6 +213,8 @@ describe('review API', () => {
         labelsRemoved: [],
         note: 'Not a bug.',
         writeBack: null,
+        undoable: true,
+        undoWindowMs: null,
       });
       expect(await writeBackJobs()).toEqual([]);
     });
@@ -390,6 +392,32 @@ describe('review API', () => {
       const response = await undo(suggestion.id);
       expect(response.statusCode).toBe(409);
       expect(response.json()).toMatchObject({ code: 'write_back_started' });
+    });
+
+    it('refuses once a worker has claimed the write-back, even if it released it unfinished', async () => {
+      const { suggestion } = await pendingSuggestion();
+      const accepted = reviewResponseSchema.parse(
+        (await review(suggestion.id, { decision: 'accept' })).json(),
+      ).review;
+      expect(accepted.undoable).toBe(true);
+      expect(accepted.undoWindowMs).toBeGreaterThan(WRITE_BACK_DELAY_MS - 5_000);
+
+      await db().execute(sql`update triage_jobs set run_after = now() where kind = 'write_back'`);
+      const claimed = await claimJob(db(), { workerId: 'test', leaseMs: 60_000 });
+      if (!claimed) {
+        throw new Error('Expected to claim the write-back');
+      }
+      // A worker shutting down mid-run puts the job back without counting the attempt; it may
+      // already have added labels.
+      await releaseJob(db(), claimed);
+
+      const response = await undo(suggestion.id);
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: 'write_back_started' });
+      const recent = recentReviewsResponseSchema.parse(
+        (await app.inject({ method: 'GET', url: '/api/reviews' })).json(),
+      );
+      expect(recent.items[0]?.review).toMatchObject({ undoable: false, undoWindowMs: null });
     });
 
     it('refuses when a newer suggestion arrived since the review', async () => {

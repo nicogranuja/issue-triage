@@ -60,12 +60,6 @@ function writeBackStatus(review: Review): { text: string; tone: 'muted' | 'ok' |
   }
 }
 
-function undoable(review: Review): boolean {
-  return review.writeBack === null
-    ? review.decision === 'rejected'
-    : review.writeBack.status === 'pending' && review.writeBack.attempts === 0;
-}
-
 export function ReviewedList({
   items,
   onUndo,
@@ -106,7 +100,7 @@ export function ReviewedList({
               {status.text}
             </p>
             {review.note && <p className={styles.note}>Note: {review.note}</p>}
-            {undoable(review) && (
+            {review.undoable && (
               <button
                 type="button"
                 className={styles.undo}

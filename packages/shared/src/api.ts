@@ -156,6 +156,16 @@ export const reviewSchema = z.object({
   createdAt: timestamp,
   /** Null when there was nothing to write (a rejection, or no label change). */
   writeBack: writeBackStatusSchema.nullable(),
+  /**
+   * Whether the review can still be undone: it has no write-back, or its write-back has never
+   * been picked up by a worker. The server re-checks on undo.
+   */
+  undoable: z.boolean(),
+  /**
+   * How long undo stays possible, by the server's clock: the time until the write-back is due.
+   * Null when there is no deadline (nothing to write) or no undo.
+   */
+  undoWindowMs: z.number().int().nonnegative().nullable(),
 });
 export type Review = z.infer<typeof reviewSchema>;
 

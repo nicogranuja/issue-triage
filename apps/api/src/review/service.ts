@@ -13,7 +13,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { Database, Transaction } from '../db/client.js';
 import { issues, repositories, reviews, triageJobs, triageSuggestions } from '../db/schema.js';
 import { enqueueWriteBackJob } from '../triage/queue.js';
-import { findPendingSuggestionId, findReview } from './queries.js';
+import { findPendingSuggestionId, findReview, writeBackUntouched } from './queries.js';
 
 /**
  * Who reviews, until sign-in exists. The review API has no authentication yet (it listens on
@@ -224,7 +224,7 @@ async function requireReview(tx: Transaction, suggestionId: number): Promise<Rev
 
 /**
  * Takes back a review, returning the suggestion to the queue, as long as nothing has been
- * written to GitHub yet: its write-back job must still be waiting and never have run. The job
+ * written to GitHub yet: its write-back job must still be waiting and never have been claimed. The job
  * row is locked first, so a worker can't claim it while the undo commits (claims skip locked
  * rows), and a job a worker already claimed is seen as running and refuses the undo.
  */
@@ -242,11 +242,17 @@ export async function undoReview(db: Database, suggestionId: number): Promise<vo
     }
 
     const [job] = await tx
-      .select({ status: triageJobs.status, attempts: triageJobs.attempts })
+      .select({
+        status: triageJobs.status,
+        attempts: triageJobs.attempts,
+        lockedBy: triageJobs.lockedBy,
+      })
       .from(triageJobs)
       .where(eq(triageJobs.reviewId, review.id))
       .for('update');
-    if (job && (job.status !== 'pending' || job.attempts > 0)) {
+    // A job a worker ever claimed may have written some labels, even if it is pending again
+    // (retrying, or released by a worker that shut down mid-run).
+    if (job && !writeBackUntouched(job)) {
       throw new ReviewConflictError(
         'write_back_started',
         'Too late to undo: the change is already being written to GitHub.',

@@ -36,8 +36,8 @@ interface FocusRequest {
   tick: number;
 }
 
-/** How long a rejection (which writes nothing) stays undoable from the keyboard. */
-const REJECT_UNDO_MS = 10_000;
+/** How long a review that writes nothing (a rejection, say) is offered for undo. */
+const NO_DEADLINE_UNDO_MS = 10_000;
 
 const PAST_TENSE: Record<Review['decision'], string> = {
   accepted: 'Accepted',
@@ -168,11 +168,13 @@ export function App() {
 
   const review = useReviewMutation({
     onSuccess: (saved, { item }) => {
-      // The server has the last word; stop offering undo a second before the job is due.
-      const until = saved.writeBack
-        ? Date.parse(saved.writeBack.runAfter) - 1_000
-        : Date.now() + REJECT_UNDO_MS;
-      const undoable = saved.writeBack !== null || saved.decision === 'rejected';
+      // The server says how long undo lasts, by its own clock; stop offering it a little early
+      // so a click doesn't race the worker. Nothing to write means no deadline: offer it for a
+      // short while.
+      const until =
+        Date.now() +
+        (saved.undoWindowMs === null ? NO_DEADLINE_UNDO_MS : saved.undoWindowMs - 1_000);
+      const undoable = saved.undoable && until > Date.now();
       setLastReview(undoable ? { suggestionId: item.suggestionId, until } : null);
       const nothingToWrite =
         saved.writeBack === null && saved.decision !== 'rejected'
