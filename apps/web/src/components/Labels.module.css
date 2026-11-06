@@ -1,0 +1,78 @@
+.list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-inline-size: 100%;
+  padding: 0.125rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--color-text-muted);
+}
+
+.chip[data-kind='add'] {
+  border-color: color-mix(in srgb, var(--color-add) 45%, transparent);
+  background: var(--color-add-bg);
+  color: var(--color-text);
+}
+
+.chip[data-kind='remove'] {
+  border-color: color-mix(in srgb, var(--color-remove) 45%, transparent);
+  background: var(--color-remove-bg);
+  color: var(--color-text);
+}
+
+.chip[data-kind='remove'] .name {
+  text-decoration: line-through;
+  text-decoration-color: var(--color-remove);
+}
+
+.mark {
+  font-weight: 700;
+  font-family: var(--font-mono);
+  inline-size: 0.6rem;
+  text-align: center;
+}
+
+.chip[data-kind='add'] .mark {
+  color: var(--color-add);
+}
+
+.chip[data-kind='remove'] .mark {
+  color: var(--color-remove);
+}
+
+.swatch {
+  inline-size: 0.5rem;
+  block-size: 0.5rem;
+  border-radius: 50%;
+  background: var(--color-border-strong);
+  flex: none;
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note {
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+}
+
+.empty {
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
+}

@@ -1,0 +1,36 @@
+.filters {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  flex-wrap: wrap;
+}
+
+.filter select {
+  max-inline-size: 13rem;
+  padding: 0.25rem 1.5rem 0.25rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.filter select:hover {
+  border-color: var(--color-border-strong);
+}
+
+.clear {
+  border: 0;
+  background: none;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.clear:hover {
+  background: var(--color-hover);
+}

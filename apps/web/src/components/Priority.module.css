@@ -1,0 +1,28 @@
+.icon {
+  inline-size: 0.875rem;
+  block-size: 0.875rem;
+  flex: none;
+  fill: var(--color-text-muted);
+}
+
+.icon rect[data-filled='false'] {
+  fill: var(--color-border-strong);
+}
+
+.icon[data-priority='urgent'] rect {
+  fill: var(--color-urgent);
+}
+
+.icon[data-priority='urgent'] path {
+  stroke: white;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  fill: none;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 500;
+}
