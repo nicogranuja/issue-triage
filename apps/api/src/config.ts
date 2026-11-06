@@ -1,3 +1,4 @@
+import { PRIORITIES, type PriorityLabels } from '@issue-triage/shared';
 import { z } from 'zod';
 
 import {
@@ -6,6 +7,29 @@ import {
   type TriageEffort,
   type TriageProvider,
 } from './triage/model.js';
+
+export const WRITE_BACK_MODES = ['github', 'dry-run'] as const;
+export type WriteBackMode = (typeof WRITE_BACK_MODES)[number];
+
+/** `PRIORITY_LABELS`: a JSON object from priority to the label that stands for it on GitHub. */
+const priorityLabelsSchema = z
+  .string()
+  .transform((value, ctx) => {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'must be a JSON object, like {"high":"P1"}' });
+      return z.NEVER;
+    }
+  })
+  .pipe(z.partialRecord(z.enum(PRIORITIES), z.string().trim().min(1).max(100)))
+  .refine(
+    (labels) => {
+      const names = Object.values(labels);
+      return new Set(names.map((name) => name.toLowerCase())).size === names.length;
+    },
+    { message: 'maps two priorities to the same label' },
+  );
 
 const databaseEnvSchema = z.object({
   /** When set, connect to this Postgres server. When unset, use an embedded PGlite database. */
@@ -38,6 +62,11 @@ const processEnvSchema = databaseEnvSchema
     /** Concurrent jobs in this process. 0 runs no worker here (for example, API-only servers). */
     TRIAGE_WORKER_CONCURRENCY: z.coerce.number().int().min(0).max(32).default(1),
     TRIAGE_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
+    /**
+     * `github` applies reviews to GitHub; `dry-run` only works out the change, from the labels
+     * stored here, and records it without calling GitHub (local development, demos).
+     */
+    WRITE_BACK_MODE: z.enum(WRITE_BACK_MODES).default('github'),
     AWS_REGION: z.string().min(1).optional(),
     AWS_DEFAULT_REGION: z.string().min(1).optional(),
   })
@@ -58,12 +87,28 @@ const processEnvSchema = databaseEnvSchema
     }
   });
 
-const serverEnvSchema = processEnvSchema.safeExtend({
-  HOST: z.string().min(1).default('127.0.0.1'),
-  PORT: z.coerce.number().int().min(0).max(65_535).default(3000),
-  /** Shared secret configured on the GitHub webhook; used to verify `X-Hub-Signature-256`. */
-  GITHUB_WEBHOOK_SECRET: z.string().min(16, 'must be at least 16 characters'),
-});
+const serverEnvSchema = processEnvSchema
+  .safeExtend({
+    HOST: z.string().min(1).default('127.0.0.1'),
+    PORT: z.coerce.number().int().min(0).max(65_535).default(3000),
+    /** Shared secret configured on the GitHub webhook; used to verify `X-Hub-Signature-256`. */
+    GITHUB_WEBHOOK_SECRET: z.string().min(16, 'must be at least 16 characters'),
+    /** Which label each priority writes to GitHub. Unset: priorities are not written. */
+    PRIORITY_LABELS: priorityLabelsSchema.optional(),
+    /** How long a review waits before it is written to GitHub: the window for undo. */
+    WRITE_BACK_DELAY_MS: z.coerce.number().int().min(0).max(300_000).default(10_000),
+    /** Load the demo repositories into an empty database on startup (development only). */
+    SEED_DEMO_DATA: z.stringbool().default(false),
+  })
+  .superRefine((env, ctx) => {
+    if (env.SEED_DEMO_DATA && env.NODE_ENV === 'production') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SEED_DEMO_DATA'],
+        message: 'demo data is for local development, not production',
+      });
+    }
+  });
 
 /** Default model per provider. Bedrock ids carry an `anthropic.` prefix. */
 export const DEFAULT_TRIAGE_MODELS: Record<TriageProvider, string> = {
@@ -88,6 +133,7 @@ export interface WorkerConfig {
   /** Jobs run concurrently by this process; 0 means no worker. */
   concurrency: number;
   maxAttempts: number;
+  writeBackMode: WriteBackMode;
 }
 
 /** Configuration for a process that runs triage jobs: the worker, or the API with a worker. */
@@ -104,6 +150,8 @@ export interface ProcessConfig {
 export interface Config extends ProcessConfig {
   server: { host: string; port: number };
   github: { token?: string; webhookSecret: string };
+  review: { priorityLabels: PriorityLabels; writeBackDelayMs: number };
+  seedDemoData: boolean;
 }
 
 export class ConfigError extends Error {
@@ -142,7 +190,11 @@ function toProcessConfig(env: z.output<typeof processEnvSchema>): ProcessConfig 
       modelTimeoutMs: env.TRIAGE_MODEL_TIMEOUT_MS,
       ...(env.TRIAGE_PROVIDER === 'bedrock' && awsRegion && { awsRegion }),
     },
-    worker: { concurrency: env.TRIAGE_WORKER_CONCURRENCY, maxAttempts: env.TRIAGE_MAX_ATTEMPTS },
+    worker: {
+      concurrency: env.TRIAGE_WORKER_CONCURRENCY,
+      maxAttempts: env.TRIAGE_MAX_ATTEMPTS,
+      writeBackMode: env.WRITE_BACK_MODE,
+    },
     github: env.GITHUB_TOKEN ? { token: env.GITHUB_TOKEN } : {},
   };
 }
@@ -165,5 +217,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...base,
     server: { host: parsed.HOST, port: parsed.PORT },
     github: { ...base.github, webhookSecret: parsed.GITHUB_WEBHOOK_SECRET },
+    review: {
+      priorityLabels: parsed.PRIORITY_LABELS ?? {},
+      writeBackDelayMs: parsed.WRITE_BACK_DELAY_MS,
+    },
+    seedDemoData: parsed.SEED_DEMO_DATA,
   };
 }

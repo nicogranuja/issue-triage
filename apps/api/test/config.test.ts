@@ -21,8 +21,50 @@ describe('loadConfig', () => {
         effort: 'medium',
         modelTimeoutMs: 60_000,
       },
-      worker: { concurrency: 1, maxAttempts: 5 },
+      worker: { concurrency: 1, maxAttempts: 5, writeBackMode: 'github' },
+      review: { priorityLabels: {}, writeBackDelayMs: 10_000 },
+      seedDemoData: false,
     });
+  });
+
+  it('reads the priority labels as a JSON object', () => {
+    const config = loadConfig({
+      ...required,
+      PRIORITY_LABELS: '{"urgent":"P0","high":" P1 "}',
+    });
+    expect(config.review.priorityLabels).toEqual({ urgent: 'P0', high: 'P1' });
+  });
+
+  it('rejects priority labels that are not a map from known priorities to distinct labels', () => {
+    for (const value of [
+      'P1',
+      '["P1"]',
+      '{"critical":"P0"}',
+      '{"high":""}',
+      '{"high":"P1","low":"p1"}',
+    ]) {
+      expect(() => loadConfig({ ...required, PRIORITY_LABELS: value }), value).toThrow(
+        /PRIORITY_LABELS/,
+      );
+    }
+  });
+
+  it('configures the write-back delay and mode', () => {
+    const config = loadConfig({
+      ...required,
+      WRITE_BACK_DELAY_MS: '0',
+      WRITE_BACK_MODE: 'dry-run',
+    });
+    expect(config.review.writeBackDelayMs).toBe(0);
+    expect(config.worker.writeBackMode).toBe('dry-run');
+    expect(() => loadConfig({ ...required, WRITE_BACK_MODE: 'yes' })).toThrow(/WRITE_BACK_MODE/);
+  });
+
+  it('seeds demo data only outside production', () => {
+    expect(loadConfig({ ...required, SEED_DEMO_DATA: 'true' }).seedDemoData).toBe(true);
+    expect(() =>
+      loadConfig({ ...required, SEED_DEMO_DATA: 'true', NODE_ENV: 'production' }),
+    ).toThrow(/SEED_DEMO_DATA/);
   });
 
   it('uses Postgres when DATABASE_URL is set', () => {
@@ -117,6 +159,7 @@ describe('triage configuration', () => {
     expect(loadProcessConfig({ ...base, TRIAGE_WORKER_CONCURRENCY: '0' }).worker).toEqual({
       concurrency: 0,
       maxAttempts: 5,
+      writeBackMode: 'github',
     });
   });
 
