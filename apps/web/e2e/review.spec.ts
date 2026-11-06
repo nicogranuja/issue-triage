@@ -1,5 +1,10 @@
-import { recentReviewsResponseSchema } from '@issue-triage/shared';
 import { expect, test } from '@playwright/test';
+
+// Only the fields checked here. (The spec doesn't import @issue-triage/shared: Playwright loads
+// it through Node, which resolves the package to its build output, not its sources.)
+interface RecentReviews {
+  items: { review: Record<string, unknown> }[];
+}
 
 test('accept with the keyboard: the item leaves the queue and its write-back is recorded', async ({
   page,
@@ -29,7 +34,7 @@ test('accept with the keyboard: the item leaves the queue and its write-back is 
     .poll(
       async () => {
         const response = await request.get('/api/reviews');
-        const { items } = recentReviewsResponseSchema.parse(await response.json());
+        const { items } = (await response.json()) as RecentReviews;
         return items[0]?.review;
       },
       { timeout: 15_000 },
