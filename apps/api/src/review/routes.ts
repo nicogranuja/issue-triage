@@ -57,11 +57,9 @@ function parse<T extends z.ZodType>(
 ): z.output<T> | null {
   const result = schema.safeParse(value);
   if (!result.success) {
-    void reply
-      .code(400)
-      .send({
-        error: `Invalid ${what}: ${describeProblems(result.error)}`,
-      } satisfies ErrorResponse);
+    void reply.code(400).send({
+      error: `Invalid ${what}: ${describeProblems(result.error)}`,
+    } satisfies ErrorResponse);
     return null;
   }
   return result.data;
