@@ -17,7 +17,8 @@ const defaults: Record<string, string> = {
   ...(!process.env.DATABASE_URL && { SEED_DEMO_DATA: 'true' }),
 };
 for (const [name, value] of Object.entries(defaults)) {
-  if (!process.env[name]) {
+  // An empty value counts as unset, as in the configuration loader.
+  if ((process.env[name] ?? '') === '') {
     process.env[name] = value;
   }
 }
