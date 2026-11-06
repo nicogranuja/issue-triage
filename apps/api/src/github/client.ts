@@ -375,6 +375,14 @@ export class GitHubClient {
       const waitMs = resetSeconds > 0 ? Math.max(0, resetSeconds * 1000 - this.#now()) : undefined;
       return new GitHubApiError(`${what}: rate limit exhausted`, status, true, waitMs);
     }
+    // A secondary rate limit can also come without either header; GitHub says to wait at
+    // least a minute then. Mutations (like adding labels) are the usual trigger.
+    if (
+      (status === 403 || status === 429) &&
+      /secondary rate limit|abuse/i.test(githubMessage ?? '')
+    ) {
+      return new GitHubApiError(`${what}: secondary rate limit`, status, true, 60_000);
+    }
     if (status >= 300 && status < 400) {
       return new GitHubApiError(`${what}: redirects are not followed`, status, false);
     }

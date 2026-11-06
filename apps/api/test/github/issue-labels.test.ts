@@ -166,6 +166,23 @@ describe('GitHubClient issue labels', () => {
     expect(error.message.length).toBeLessThan(300);
   });
 
+  it('retries a secondary rate limit that comes without headers, after a minute', async () => {
+    const client = new GitHubClient({
+      fetch: fakeFetch(() =>
+        json(
+          {
+            message:
+              'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.',
+          },
+          403,
+        ),
+      ).fetch,
+    });
+    const error = await rejection(client.addLabels('lumen-labs', 'lumen', 42, ['bug']));
+    expect(error).toMatchObject({ status: 403, retryable: true, retryAfterMs: 60_000 });
+    expect(error.message).toMatch(/secondary rate limit/);
+  });
+
   it('retries a 403 that is a rate limit', async () => {
     const client = new GitHubClient({
       fetch: fakeFetch(
