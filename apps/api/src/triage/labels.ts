@@ -13,8 +13,14 @@ export interface RepositoryRef {
   name: string;
 }
 
+export interface LabelOptions {
+  signal?: AbortSignal;
+  /** Skip the cache and fetch from GitHub (refreshing the cache), for writes. */
+  fresh?: boolean;
+}
+
 export interface LabelSource {
-  labelsFor(repository: RepositoryRef, options?: { signal?: AbortSignal }): Promise<GitHubLabel[]>;
+  labelsFor(repository: RepositoryRef, options?: LabelOptions): Promise<GitHubLabel[]>;
 }
 
 /**
@@ -23,7 +29,8 @@ export interface LabelSource {
  * across all workers. Freshness is judged by the database clock, like the rest of the queue.
  *
  * A failed fetch is not papered over with stale labels: suggesting a label that was deleted would
- * recreate it when the suggestion is written back, so the job fails and retries instead.
+ * recreate it when the suggestion is written back, so the job fails and retries instead. The
+ * write-back itself always asks for `fresh` labels, since the cache can be minutes old.
  */
 export class RepositoryLabelCache implements LabelSource {
   readonly #db: Database;
@@ -42,8 +49,27 @@ export class RepositoryLabelCache implements LabelSource {
 
   async labelsFor(
     repository: RepositoryRef,
-    options: { signal?: AbortSignal } = {},
+    { signal, fresh = false }: LabelOptions = {},
   ): Promise<GitHubLabel[]> {
+    if (!fresh) {
+      const cached = await this.#cached(repository);
+      if (cached) {
+        return cached;
+      }
+    }
+    const labels = await this.#github.listLabels(
+      repository.owner,
+      repository.name,
+      signal ? { signal } : {},
+    );
+    await this.#db
+      .update(repositories)
+      .set({ labels, labelsFetchedAt: sql`now()` })
+      .where(eq(repositories.id, repository.id));
+    return labels;
+  }
+
+  async #cached(repository: RepositoryRef): Promise<GitHubLabel[] | null> {
     const [cached] = await this.#db
       .select({
         labels: repositories.labels,
@@ -51,15 +77,6 @@ export class RepositoryLabelCache implements LabelSource {
       })
       .from(repositories)
       .where(eq(repositories.id, repository.id));
-    if (cached?.labels && cached.fresh) {
-      return cached.labels;
-    }
-
-    const labels = await this.#github.listLabels(repository.owner, repository.name, options);
-    await this.#db
-      .update(repositories)
-      .set({ labels, labelsFetchedAt: sql`now()` })
-      .where(eq(repositories.id, repository.id));
-    return labels;
+    return cached?.labels && cached.fresh ? cached.labels : null;
   }
 }

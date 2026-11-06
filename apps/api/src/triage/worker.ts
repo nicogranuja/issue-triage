@@ -20,6 +20,7 @@ import {
   type ClaimedJob,
 } from './queue.js';
 import { runTriageJob } from './runner.js';
+import { runWriteBackJob, type WriteBackDependencies } from './write-back.js';
 
 export interface TriageWorkerOptions {
   db: Database;
@@ -38,6 +39,8 @@ export interface TriageWorkerOptions {
   pollIntervalMs?: number;
   backoff?: BackoffPolicy;
   duplicates?: DuplicateSearchOptions;
+  /** Runs write-back jobs too when set. Without it, the worker only claims triage jobs. */
+  writeBack?: Omit<WriteBackDependencies, 'db'>;
   workerId?: string;
   random?: () => number;
 }
@@ -74,7 +77,8 @@ function describeUnexpected(error: unknown): string {
 }
 
 /**
- * Polls the triage queue and runs jobs, `concurrency` at a time.
+ * Polls the queue and runs jobs, `concurrency` at a time: triage jobs, and write-back jobs when
+ * it has what they need.
  *
  * Each run has a hard deadline, enforced with an AbortSignal that reaches the GitHub and model
  * requests. The lease outlasts the deadline, so a healthy worker always finishes (or gives up on)
@@ -165,11 +169,20 @@ export class TriageWorker {
   /** Claims and runs one job. Returns false when no job was due. */
   async runNext(): Promise<boolean> {
     const { db, logger, maxAttempts } = this.#options;
-    const job = await claimJob(db, { workerId: this.workerId, leaseMs: this.#leaseMs });
+    const job = await claimJob(db, {
+      workerId: this.workerId,
+      leaseMs: this.#leaseMs,
+      kinds: this.#options.writeBack ? ['triage', 'write_back'] : ['triage'],
+    });
     if (!job) {
       return false;
     }
-    const log = logger.child({ jobId: job.jobId, issueId: job.issueId, attempt: job.attempts });
+    const log = logger.child({
+      jobId: job.jobId,
+      kind: job.kind,
+      issueId: job.issueId,
+      attempt: job.attempts,
+    });
 
     if (job.attempts > maxAttempts) {
       // Earlier runs ended with an expired lease (a crash or hang), not a recorded failure.
@@ -181,8 +194,12 @@ export class TriageWorker {
     const deadline = AbortSignal.timeout(this.#options.jobTimeoutMs);
     const signal = AbortSignal.any([deadline, this.#interrupt.signal]);
     try {
-      const outcome = await runTriageJob(this.#options, job, signal);
-      log.info(outcome, 'triage job finished');
+      const { writeBack } = this.#options;
+      const outcome =
+        job.kind === 'write_back' && writeBack
+          ? await runWriteBackJob({ db, ...writeBack }, job, signal)
+          : await runTriageJob(this.#options, job, signal);
+      log.info(outcome, `${job.kind} job finished`);
     } catch (error) {
       await this.#recordFailure(job, error, deadline.aborted, log);
     }
