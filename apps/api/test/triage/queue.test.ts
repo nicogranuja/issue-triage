@@ -4,16 +4,16 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DatabaseHandle } from '../../src/db/client.js';
 import { issues, repositories, triageJobs } from '../../src/db/schema.js';
 import {
-  cancelTriageJob,
-  cancelTriageJobsForIssue,
-  claimTriageJob,
-  completeTriageJob,
+  cancelJob,
+  cancelJobsForIssue,
+  claimJob,
+  completeJob,
   enqueueTriageJob,
-  failTriageJob,
-  releaseTriageJob,
+  failJob,
+  releaseJob,
   retryDelayMs,
   MAX_RETRY_DELAY_MS,
-  scheduleTriageRetry,
+  scheduleRetry,
   type ClaimedJob,
 } from '../../src/triage/queue.js';
 import { createMigratedTestDatabase } from '../helpers/database.js';
@@ -58,7 +58,7 @@ describe('triage job queue', () => {
   }
 
   async function claim(): Promise<ClaimedJob> {
-    const claimed = await claimTriageJob(db(), claimOptions);
+    const claimed = await claimJob(db(), claimOptions);
     if (!claimed) {
       throw new Error('Expected a job to claim');
     }
@@ -88,7 +88,7 @@ describe('triage job queue', () => {
       const [issueId = 0] = await seedIssues(1);
       await enqueueTriageJob(db(), issueId);
       const claimed = await claim();
-      await scheduleTriageRetry(db(), claimed, { error: 'overloaded', delayMs: 60_000 });
+      await scheduleRetry(db(), claimed, { error: 'overloaded', delayMs: 60_000 });
       const waiting = await job(claimed.jobId);
 
       expect(await enqueueTriageJob(db(), issueId)).toBe(false);
@@ -113,7 +113,7 @@ describe('triage job queue', () => {
 
   describe('claim', () => {
     it('returns null when nothing is due', async () => {
-      expect(await claimTriageJob(db(), claimOptions)).toBeNull();
+      expect(await claimJob(db(), claimOptions)).toBeNull();
     });
 
     it('claims the oldest due job and takes a lease on it', async () => {
@@ -140,7 +140,7 @@ describe('triage job queue', () => {
         .update(triageJobs)
         .set({ runAfter: sql`now() + interval '1 hour'` });
 
-      expect(await claimTriageJob(db(), claimOptions)).toBeNull();
+      expect(await claimJob(db(), claimOptions)).toBeNull();
     });
 
     it('does not start a second job for an issue while one is running', async () => {
@@ -153,9 +153,9 @@ describe('triage job queue', () => {
       // Other issues are not held up...
       expect((await claim()).issueId).toBe(otherIssueId);
       // ...but this issue's newer job waits for the running one.
-      expect(await claimTriageJob(db(), claimOptions)).toBeNull();
+      expect(await claimJob(db(), claimOptions)).toBeNull();
 
-      await completeTriageJob(db(), running);
+      await completeJob(db(), running);
       expect((await claim()).issueId).toBe(issueId);
     });
 
@@ -168,9 +168,9 @@ describe('triage job queue', () => {
 
       const reclaimed = await claim();
       expect(reclaimed).toMatchObject({ jobId: stalled.jobId, attempts: 2 });
-      expect(await claimTriageJob(db(), claimOptions)).toBeNull();
+      expect(await claimJob(db(), claimOptions)).toBeNull();
 
-      await completeTriageJob(db(), reclaimed);
+      await completeJob(db(), reclaimed);
       expect((await claim()).jobId).not.toBe(stalled.jobId);
     });
 
@@ -184,7 +184,7 @@ describe('triage job queue', () => {
       // More claimers than jobs, all at once. On Postgres these run on separate connections.
       const results = await Promise.all(
         Array.from({ length: 20 }, (_, i) =>
-          claimTriageJob(db(), { ...claimOptions, workerId: `worker-${i}` }),
+          claimJob(db(), { ...claimOptions, workerId: `worker-${i}` }),
         ),
       );
 
@@ -203,10 +203,10 @@ describe('triage job queue', () => {
 
         await db().transaction(async (tx) => {
           // Worker A claims inside an open transaction, so its row lock is still held...
-          const a = await claimTriageJob(tx, { ...claimOptions, workerId: 'a' });
+          const a = await claimJob(tx, { ...claimOptions, workerId: 'a' });
           // ...while worker B claims on another connection. Without SKIP LOCKED, B would block
           // on A's row until A commits, and this test would time out.
-          const b = await claimTriageJob(db(), { ...claimOptions, workerId: 'b' });
+          const b = await claimJob(db(), { ...claimOptions, workerId: 'b' });
 
           expect(a?.issueId).toBe(first);
           expect(b?.issueId).toBe(second);
@@ -221,7 +221,7 @@ describe('triage job queue', () => {
       await enqueueTriageJob(db(), issueId);
       const claimed = await claim();
 
-      expect(await completeTriageJob(db(), claimed)).toBe(true);
+      expect(await completeJob(db(), claimed)).toBe(true);
 
       const row = await job(claimed.jobId);
       expect(row).toMatchObject({ status: 'succeeded', leaseToken: null, lockedUntil: null });
@@ -234,7 +234,7 @@ describe('triage job queue', () => {
       const claimed = await claim();
       const forged = { jobId: claimed.jobId, leaseToken: '00000000-0000-4000-8000-000000000000' };
 
-      expect(await completeTriageJob(db(), forged)).toBe(false);
+      expect(await completeJob(db(), forged)).toBe(false);
       expect((await job(claimed.jobId)).status).toBe('running');
     });
 
@@ -243,7 +243,7 @@ describe('triage job queue', () => {
       await enqueueTriageJob(db(), issueId);
       const claimed = await claim();
 
-      expect(await cancelTriageJob(db(), claimed, 'issue was closed')).toBe(true);
+      expect(await cancelJob(db(), claimed, 'issue was closed')).toBe(true);
       expect(await job(claimed.jobId)).toMatchObject({
         status: 'cancelled',
         lastError: 'issue was closed',
@@ -258,14 +258,14 @@ describe('triage job queue', () => {
       const claimed = await claim();
       await backdate(claimed.jobId, 'locked_until');
 
-      expect(await completeTriageJob(db(), claimed)).toBe(false);
+      expect(await completeJob(db(), claimed)).toBe(false);
     });
 
     it('lets another worker reclaim a job whose lease expired, and fences out the first', async () => {
       const [issueId = 0] = await seedIssues(1);
       await enqueueTriageJob(db(), issueId);
       const first = await claim();
-      expect(await claimTriageJob(db(), claimOptions)).toBeNull();
+      expect(await claimJob(db(), claimOptions)).toBeNull();
 
       await backdate(first.jobId, 'locked_until');
       const second = await claim();
@@ -274,8 +274,8 @@ describe('triage job queue', () => {
       expect(second.attempts).toBe(2);
       expect(second.leaseToken).not.toBe(first.leaseToken);
       // The first worker wakes up late: its result must not count.
-      expect(await completeTriageJob(db(), first)).toBe(false);
-      expect(await completeTriageJob(db(), second)).toBe(true);
+      expect(await completeJob(db(), first)).toBe(false);
+      expect(await completeJob(db(), second)).toBe(true);
     });
   });
 
@@ -286,7 +286,7 @@ describe('triage job queue', () => {
       const claimed = await claim();
 
       const before = Date.now();
-      await scheduleTriageRetry(db(), claimed, { error: 'rate limited', delayMs: 30_000 });
+      await scheduleRetry(db(), claimed, { error: 'rate limited', delayMs: 30_000 });
 
       const row = await job(claimed.jobId);
       expect(row).toMatchObject({
@@ -298,7 +298,7 @@ describe('triage job queue', () => {
       // The database clock sets run_after; allow for a little skew against this process.
       expect(row.runAfter.getTime()).toBeGreaterThan(before + 25_000);
       expect(row.runAfter.getTime()).toBeLessThan(before + 35_000);
-      expect(await claimTriageJob(db(), claimOptions)).toBeNull();
+      expect(await claimJob(db(), claimOptions)).toBeNull();
 
       await backdate(claimed.jobId, 'run_after');
       expect((await claim()).attempts).toBe(2);
@@ -309,7 +309,7 @@ describe('triage job queue', () => {
       await enqueueTriageJob(db(), issueId);
       const claimed = await claim();
 
-      await failTriageJob(db(), claimed, 'x'.repeat(10_000));
+      await failJob(db(), claimed, 'x'.repeat(10_000));
 
       const row = await job(claimed.jobId);
       expect(row.status).toBe('failed');
@@ -323,7 +323,7 @@ describe('triage job queue', () => {
 
       const before = Date.now();
       expect(
-        await scheduleTriageRetry(db(), claimed, {
+        await scheduleRetry(db(), claimed, {
           error: 'rate limited',
           delayMs: 90 * 86_400_000,
         }),
@@ -336,9 +336,9 @@ describe('triage job queue', () => {
     it.each([
       [
         'retrying',
-        (lease: ClaimedJob) => scheduleTriageRetry(database.db, lease, { error: 'x', delayMs: 1 }),
+        (lease: ClaimedJob) => scheduleRetry(database.db, lease, { error: 'x', delayMs: 1 }),
       ],
-      ['releasing', (lease: ClaimedJob) => releaseTriageJob(database.db, lease)],
+      ['releasing', (lease: ClaimedJob) => releaseJob(database.db, lease)],
     ])(
       'cancels instead of %s a job when a newer job for the issue is already pending',
       async (_, requeue) => {
@@ -363,7 +363,7 @@ describe('triage job queue', () => {
       await enqueueTriageJob(db(), issueId);
       const claimed = await claim();
 
-      expect(await releaseTriageJob(db(), claimed)).toBe('requeued');
+      expect(await releaseJob(db(), claimed)).toBe('requeued');
 
       expect(await job(claimed.jobId)).toMatchObject({ status: 'pending', attempts: 0 });
       expect((await claim()).attempts).toBe(1);
@@ -378,9 +378,9 @@ describe('triage job queue', () => {
       await enqueueTriageJob(db(), issueId);
       await enqueueTriageJob(db(), otherIssueId);
 
-      expect(await cancelTriageJobsForIssue(db(), issueId, 'issue deleted')).toBe(2);
+      expect(await cancelJobsForIssue(db(), issueId, 'issue deleted')).toBe(2);
 
-      expect(await completeTriageJob(db(), running)).toBe(false);
+      expect(await completeJob(db(), running)).toBe(false);
       const rows = await db().select().from(triageJobs).orderBy(triageJobs.id);
       expect(rows.map((row) => [row.issueId, row.status])).toEqual([
         [issueId, 'cancelled'],

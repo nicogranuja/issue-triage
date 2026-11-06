@@ -15,11 +15,7 @@ import {
   type TriageSuggestion,
 } from '../../src/triage/model.js';
 import { PROMPT_VERSION } from '../../src/triage/prompt.js';
-import {
-  cancelTriageJobsForIssue,
-  claimTriageJob,
-  enqueueTriageJob,
-} from '../../src/triage/queue.js';
+import { cancelJobsForIssue, claimJob, enqueueTriageJob } from '../../src/triage/queue.js';
 import { TriageWorker, type TriageWorkerOptions } from '../../src/triage/worker.js';
 import { createMigratedTestDatabase } from '../helpers/database.js';
 import { seedIssue, seedRepository } from '../helpers/seed.js';
@@ -223,7 +219,7 @@ describe('TriageWorker', () => {
       const { issue } = await seedJob();
       const model = new FakeTriageModel({
         respond: async (input) => {
-          await cancelTriageJobsForIssue(db(), issue.id, 'Issue was deleted on GitHub');
+          await cancelJobsForIssue(db(), issue.id, 'Issue was deleted on GitHub');
           return suggestionFor(input);
         },
       });
@@ -446,7 +442,7 @@ describe('TriageWorker', () => {
           await db().execute(
             sql`update triage_jobs set locked_until = now() - interval '1 second'`,
           );
-          await claimTriageJob(db(), { workerId: 'other-worker', leaseMs: 60_000 });
+          await claimJob(db(), { workerId: 'other-worker', leaseMs: 60_000 });
           return suggestionFor(input);
         },
       });

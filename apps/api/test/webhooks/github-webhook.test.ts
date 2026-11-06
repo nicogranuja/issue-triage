@@ -10,7 +10,7 @@ import {
   triageSuggestions,
   webhookDeliveries,
 } from '../../src/db/schema.js';
-import { claimTriageJob, completeTriageJob } from '../../src/triage/queue.js';
+import { claimJob, completeJob } from '../../src/triage/queue.js';
 import { applyIssuesEvent } from '../../src/webhooks/issues.js';
 import { issuesEventSchema } from '../../src/webhooks/payloads.js';
 import { signPayload } from '../../src/webhooks/signature.js';
@@ -201,11 +201,11 @@ describe('POST /webhooks/github', () => {
 
     /** Runs the pending job to completion, as a worker would. */
     async function finishPendingJob() {
-      const claimed = await claimTriageJob(database.db, { workerId: 'test', leaseMs: 60_000 });
+      const claimed = await claimJob(database.db, { workerId: 'test', leaseMs: 60_000 });
       if (!claimed) {
         throw new Error('Expected a pending triage job');
       }
-      await completeTriageJob(database.db, claimed);
+      await completeJob(database.db, claimed);
     }
 
     it('queues triage when an issue is opened', async () => {
@@ -339,7 +339,7 @@ describe('POST /webhooks/github', () => {
 
     it('cancels a job that a worker is already running', async () => {
       await deliver(app, { event: 'issues', payload: issuesPayload('issues.opened') });
-      const running = await claimTriageJob(database.db, { workerId: 'test', leaseMs: 60_000 });
+      const running = await claimJob(database.db, { workerId: 'test', leaseMs: 60_000 });
       if (!running) {
         throw new Error('Expected a pending triage job');
       }
@@ -347,7 +347,7 @@ describe('POST /webhooks/github', () => {
       await deliver(app, { event: 'issues', payload: issuesPayload('issues.deleted') });
 
       // The worker's result is discarded when it tries to save it.
-      expect(await completeTriageJob(database.db, running)).toBe(false);
+      expect(await completeJob(database.db, running)).toBe(false);
       expect(await jobStatuses()).toEqual(['cancelled']);
     });
 

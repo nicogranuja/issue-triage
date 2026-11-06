@@ -94,7 +94,7 @@ export async function enqueueTriageJob(tx: Executor, issueId: number): Promise<b
  * `skip locked` makes a concurrent claimer pass over a row another worker is claiming instead of
  * waiting for it, so N workers claim N different jobs.
  */
-export async function claimTriageJob(
+export async function claimJob(
   db: Executor,
   { workerId, leaseMs }: ClaimOptions,
 ): Promise<ClaimedJob | null> {
@@ -205,7 +205,7 @@ function truncateError(message: string): string {
  * The lease must also be unexpired: once it expires, a newer job for the issue may start, and a
  * late result from this one must not land after it.
  */
-export function completeTriageJob(tx: Executor, lease: Lease): Promise<boolean> {
+export function completeJob(tx: Executor, lease: Lease): Promise<boolean> {
   return updateLeased(
     tx,
     lease,
@@ -248,7 +248,7 @@ async function requeue(db: Database, lease: Lease, set: JobUpdate): Promise<Requ
       throw error;
     }
     const reason = 'Superseded by a newer job for the same issue';
-    return (await cancelTriageJob(db, lease, reason)) ? 'superseded' : 'lease_lost';
+    return (await cancelJob(db, lease, reason)) ? 'superseded' : 'lease_lost';
   }
 }
 
@@ -256,7 +256,7 @@ async function requeue(db: Database, lease: Lease, set: JobUpdate): Promise<Requ
 export const MAX_RETRY_DELAY_MS = 6 * 60 * 60 * 1000;
 
 /** Puts a job back in the queue to run again after `delayMs` (capped at six hours). */
-export function scheduleTriageRetry(
+export function scheduleRetry(
   db: Database,
   lease: Lease,
   { error, delayMs }: { error: string; delayMs: number },
@@ -269,7 +269,7 @@ export function scheduleTriageRetry(
 }
 
 /** Gives up on a job for good. */
-export function failTriageJob(tx: Executor, lease: Lease, error: string): Promise<boolean> {
+export function failJob(tx: Executor, lease: Lease, error: string): Promise<boolean> {
   return updateLeased(tx, lease, {
     ...releaseLease,
     status: 'failed',
@@ -279,7 +279,7 @@ export function failTriageJob(tx: Executor, lease: Lease, error: string): Promis
 }
 
 /** Ends a job whose work is no longer needed, for example because the issue was closed. */
-export function cancelTriageJob(tx: Executor, lease: Lease, reason: string): Promise<boolean> {
+export function cancelJob(tx: Executor, lease: Lease, reason: string): Promise<boolean> {
   return updateLeased(tx, lease, {
     ...releaseLease,
     status: 'cancelled',
@@ -292,7 +292,7 @@ export function cancelTriageJob(tx: Executor, lease: Lease, reason: string): Pro
  * Returns a job to the queue without counting the attempt, for a worker that is shutting down
  * and interrupted the job itself. The job is due again immediately.
  */
-export function releaseTriageJob(db: Database, lease: Lease): Promise<RequeueResult> {
+export function releaseJob(db: Database, lease: Lease): Promise<RequeueResult> {
   return requeue(db, lease, {
     attempts: sql`greatest(${triageJobs.attempts} - 1, 0)`,
     runAfter: sql`now()`,
@@ -303,7 +303,7 @@ export function releaseTriageJob(db: Database, lease: Lease): Promise<RequeueRes
  * Cancels the issue's pending and running jobs. A worker running one of them finds its lease gone
  * when it tries to save the result, and discards it. Returns how many jobs were cancelled.
  */
-export async function cancelTriageJobsForIssue(
+export async function cancelJobsForIssue(
   tx: Executor,
   issueId: number,
   reason: string,

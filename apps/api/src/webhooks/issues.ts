@@ -3,7 +3,7 @@ import { and, eq, lte, sql } from 'drizzle-orm';
 
 import type { Transaction } from '../db/client.js';
 import { issues, repositories, triageSuggestions } from '../db/schema.js';
-import { cancelTriageJobsForIssue, enqueueTriageJob } from '../triage/queue.js';
+import { cancelJobsForIssue, enqueueTriageJob } from '../triage/queue.js';
 import { REMOVAL_ISSUE_ACTIONS, TRIAGE_ISSUE_ACTIONS, type IssuesEvent } from './payloads.js';
 
 /** `stale` means the stored issue is newer than the event, so the event was skipped. */
@@ -111,7 +111,7 @@ async function removeIssue(
   if (!removed) {
     throw new Error(`No stored issue with GitHub id ${githubIssueId} to remove`);
   }
-  await cancelTriageJobsForIssue(tx, removed.id, `Issue was ${reason} on GitHub`);
+  await cancelJobsForIssue(tx, removed.id, `Issue was ${reason} on GitHub`);
   // A worker that saved just before this transaction is covered here; one saving after it finds
   // its job cancelled and saves nothing.
   await tx

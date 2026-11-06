@@ -12,7 +12,7 @@ import {
 } from './model.js';
 import { outputContext, suggestionSchema } from './output.js';
 import { PROMPT_VERSION } from './prompt.js';
-import { cancelTriageJob, completeTriageJob, type ClaimedJob } from './queue.js';
+import { cancelJob, completeJob, type ClaimedJob } from './queue.js';
 
 export interface TriageJobDependencies {
   db: Database;
@@ -63,9 +63,7 @@ export async function runTriageJob(
     .where(eq(issues.id, job.issueId));
 
   const cancel = async (reason: string): Promise<TriageJobOutcome> =>
-    (await cancelTriageJob(db, job, reason))
-      ? { status: 'cancelled', reason }
-      : { status: 'lease_lost' };
+    (await cancelJob(db, job, reason)) ? { status: 'cancelled', reason } : { status: 'lease_lost' };
   if (!issue) {
     return cancel('Issue no longer exists');
   }
@@ -105,7 +103,7 @@ export async function runTriageJob(
 
   try {
     return await db.transaction(async (tx) => {
-      if (!(await completeTriageJob(tx, job))) {
+      if (!(await completeJob(tx, job))) {
         throw new LeaseLost();
       }
       const suggestionId = await saveSuggestion(

@@ -11,11 +11,11 @@ import type { DuplicateSearchOptions } from './duplicates.js';
 import type { LabelSource } from './labels.js';
 import { TriageModelError, type TriageModel } from './model.js';
 import {
-  claimTriageJob,
-  failTriageJob,
-  releaseTriageJob,
+  claimJob,
+  failJob,
+  releaseJob,
   retryDelayMs,
-  scheduleTriageRetry,
+  scheduleRetry,
   type BackoffPolicy,
   type ClaimedJob,
 } from './queue.js';
@@ -165,7 +165,7 @@ export class TriageWorker {
   /** Claims and runs one job. Returns false when no job was due. */
   async runNext(): Promise<boolean> {
     const { db, logger, maxAttempts } = this.#options;
-    const job = await claimTriageJob(db, { workerId: this.workerId, leaseMs: this.#leaseMs });
+    const job = await claimJob(db, { workerId: this.workerId, leaseMs: this.#leaseMs });
     if (!job) {
       return false;
     }
@@ -173,7 +173,7 @@ export class TriageWorker {
 
     if (job.attempts > maxAttempts) {
       // Earlier runs ended with an expired lease (a crash or hang), not a recorded failure.
-      await failTriageJob(db, job, `Gave up after ${maxAttempts} attempts`);
+      await failJob(db, job, `Gave up after ${maxAttempts} attempts`);
       log.error('triage job exceeded its attempts');
       return true;
     }
@@ -198,7 +198,7 @@ export class TriageWorker {
     const { db, maxAttempts, jobTimeoutMs } = this.#options;
     try {
       if (this.#interrupt.signal.aborted && !timedOut) {
-        const result = await releaseTriageJob(db, job);
+        const result = await releaseJob(db, job);
         log.info({ result }, 'triage job interrupted by shutdown');
         return;
       }
@@ -208,10 +208,10 @@ export class TriageWorker {
           retryDelayMs(job.attempts, this.#backoff, this.#random),
           failure.retryAfterMs ?? 0,
         );
-        const result = await scheduleTriageRetry(db, job, { error: failure.message, delayMs });
+        const result = await scheduleRetry(db, job, { error: failure.message, delayMs });
         log.warn({ err: error, delayMs, result }, 'triage job failed; will retry');
       } else {
-        await failTriageJob(db, job, failure.message);
+        await failJob(db, job, failure.message);
         log.error({ err: error, retryable: failure.retryable }, 'triage job failed');
       }
     } catch (recordError) {
