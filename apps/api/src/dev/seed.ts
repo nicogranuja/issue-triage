@@ -395,6 +395,7 @@ export async function seedDemoData(db: Database, now: Date = new Date()): Promis
     );
 
     let issueGithubId = 990_100_000;
+    const pending: { issue: DemoIssue; issueId: number; idByNumber: Map<number, number> }[] = [];
     for (const demo of DEMO_REPOSITORIES) {
       const labels: GitHubLabel[] = demo.labels.map(([name, color, description]) => ({
         name,
@@ -444,45 +445,50 @@ export async function seedDemoData(db: Database, now: Date = new Date()): Promis
         idByNumber.set(issue.number, row.id);
       }
 
-      // Oldest issue first, so the queue's "oldest first" order matches the issues' ages.
-      const suggested = demo.issues
-        .filter((issue) => issue.suggestion)
-        .sort((a, b) => b.hoursAgo - a.hoursAgo);
-      for (const issue of suggested) {
-        const suggestion = issue.suggestion;
+      for (const issue of demo.issues) {
         const issueId = idByNumber.get(issue.number);
-        if (!suggestion || issueId === undefined) {
-          continue;
+        if (issue.suggestion && issueId !== undefined) {
+          pending.push({ issue, issueId, idByNumber });
         }
-        const [labelNames, labelsConfidence, labelsRationale] = suggestion.labels;
-        const [level, priorityConfidence, priorityRationale] = suggestion.priority;
-        const [duplicates, duplicatesConfidence, duplicatesRationale] =
-          suggestion.duplicates ?? NO_DUPLICATES;
-        await tx.insert(triageSuggestions).values({
-          issueId,
-          summary: suggestion.summary,
-          labels: labelNames,
-          labelsConfidence,
-          labelsRationale,
-          priority: level,
-          priorityConfidence,
-          priorityRationale,
-          duplicates: duplicates.flatMap(({ number, reason }) => {
-            const duplicateId = idByNumber.get(number);
-            return duplicateId === undefined ? [] : [{ issueId: duplicateId, reason }];
-          }),
-          duplicatesConfidence,
-          duplicatesRationale,
-          model: 'demo-data',
-          promptVersion: PROMPT_VERSION,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
-          modelCalls: 1,
-          latencyMs: 0,
-        });
       }
+    }
+
+    // Oldest issue first, across repositories, so the queue's "oldest first" order within a
+    // priority matches the issues' ages.
+    pending.sort((a, b) => b.issue.hoursAgo - a.issue.hoursAgo);
+    for (const { issue, issueId, idByNumber } of pending) {
+      const suggestion = issue.suggestion;
+      if (!suggestion) {
+        continue;
+      }
+      const [labelNames, labelsConfidence, labelsRationale] = suggestion.labels;
+      const [level, priorityConfidence, priorityRationale] = suggestion.priority;
+      const [duplicates, duplicatesConfidence, duplicatesRationale] =
+        suggestion.duplicates ?? NO_DUPLICATES;
+      await tx.insert(triageSuggestions).values({
+        issueId,
+        summary: suggestion.summary,
+        labels: labelNames,
+        labelsConfidence,
+        labelsRationale,
+        priority: level,
+        priorityConfidence,
+        priorityRationale,
+        duplicates: duplicates.flatMap(({ number, reason }) => {
+          const duplicateId = idByNumber.get(number);
+          return duplicateId === undefined ? [] : [{ issueId: duplicateId, reason }];
+        }),
+        duplicatesConfidence,
+        duplicatesRationale,
+        model: 'demo-data',
+        promptVersion: PROMPT_VERSION,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        modelCalls: 1,
+        latencyMs: 0,
+      });
     }
   });
 }
