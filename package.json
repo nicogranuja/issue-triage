@@ -13,6 +13,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "dev": "concurrently --kill-others-on-fail --names api,web --prefix-colors blue,magenta \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "npm run dev -w @issue-triage/api",
     "dev:worker": "npm run dev:worker -w @issue-triage/api",
     "smoke:triage": "npm run smoke:triage -w @issue-triage/api",
@@ -22,10 +23,12 @@
     "format:check": "prettier --check .",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present"
+    "build": "npm run build --workspaces --if-present",
+    "seed": "npm run seed -w @issue-triage/api"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "concurrently": "10.0.6",
     "eslint": "10.14.0",
     "eslint-config-prettier": "10.1.8",
     "eslint-plugin-react-hooks": "7.1.1",

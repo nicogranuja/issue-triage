@@ -3,6 +3,7 @@ import { pino } from 'pino';
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
 import { connectDatabase } from './db/client.js';
+import { seedDemoDataIfEmpty } from './dev/seed.js';
 import { startTriageWorker } from './triage/start.js';
 
 async function main(): Promise<void> {
@@ -20,6 +21,9 @@ async function main(): Promise<void> {
     await database.migrate();
   }
   logger.info({ driver: database.driver }, 'database ready');
+  if (config.seedDemoData && (await seedDemoDataIfEmpty(database.db))) {
+    logger.info('loaded demo data into the empty database');
+  }
 
   const app = await buildApp({ config, db: database.db, logger });
   app.addHook('onClose', () => database.close());
@@ -45,6 +49,16 @@ async function main(): Promise<void> {
   process.once('SIGTERM', shutdown);
 
   await app.listen({ host: config.server.host, port: config.server.port });
+  if (!isLoopback(config.server.host)) {
+    logger.warn(
+      { host: config.server.host },
+      'the review API has no authentication yet: anyone who can reach this address can review and write to GitHub',
+    );
+  }
+}
+
+function isLoopback(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host);
 }
 
 main().catch((error: unknown) => {

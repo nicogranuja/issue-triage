@@ -6,7 +6,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --conditions=@issue-triage/source --env-file-if-exists=../../.env src/index.ts",
+    "dev": "tsx watch --conditions=@issue-triage/source --env-file-if-exists=../../.env src/dev.ts",
     "dev:worker": "tsx watch --conditions=@issue-triage/source --env-file-if-exists=../../.env src/worker.ts",
     "start": "node --env-file-if-exists=../../.env dist/index.js",
     "worker": "node --env-file-if-exists=../../.env dist/worker.js",
@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "db:generate": "NODE_OPTIONS=--conditions=@issue-triage/source drizzle-kit generate",
     "db:migrate": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env src/db/migrate.ts",
-    "smoke:triage": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env scripts/smoke-triage.ts"
+    "smoke:triage": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env scripts/smoke-triage.ts",
+    "seed": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env scripts/seed.ts"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "1.1.1",
