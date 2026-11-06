@@ -74,3 +74,29 @@ jobs:
       # With DATABASE_URL set, each test file runs in its own database on this server.
       - name: Test (Postgres)
         run: npm test -w @issue-triage/api
+
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      # Starts the API (fake model, in-memory PGlite, demo data, dry-run write-back) and the web
+      # dev server, then drives the browser. Nothing calls GitHub or a model.
+      - name: Run end-to-end tests
+        run: npm run e2e -w @issue-triage/web
+      - name: Upload traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-traces
+          path: apps/web/test-results/
+          retention-days: 7
