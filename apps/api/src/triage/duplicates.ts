@@ -55,7 +55,7 @@ const DEFAULTS = { limit: 5, minScore: 0.15, poolSize: 500 } satisfies Duplicate
 
 /** Characters of each body compared; enough to capture the problem statement. */
 const BODY_CHARS = 2000;
-const EXCERPT_CHARS = 300;
+export const EXCERPT_CHARS = 300;
 const TITLE_WEIGHT = 2;
 
 // Common English function words. Domain words are left to IDF, which learns them per repository.
