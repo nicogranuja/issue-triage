@@ -122,11 +122,19 @@ export const repositoryLabelSchema = z.object({
 });
 export type RepositoryLabel = z.infer<typeof repositoryLabelSchema>;
 
+export const writeBackAttemptSchema = z.object({
+  attempt: z.number().int(),
+  added: z.array(z.string()),
+  removed: z.array(z.string()),
+  skipped: z.array(z.string()),
+});
+
 export const writeBackResultSchema = z.object({
   added: z.array(z.string()),
   removed: z.array(z.string()),
   skipped: z.array(z.string()),
   dryRun: z.boolean(),
+  attempts: z.array(writeBackAttemptSchema).optional(),
 });
 
 /** Where a review's write-back job is. */

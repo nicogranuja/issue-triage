@@ -265,6 +265,20 @@ export function completeJob(
   );
 }
 
+/**
+ * Saves what a running job has done so far, without finishing it, so that the record survives a
+ * failure later in the run. Write-back jobs call it after each change they make on GitHub. Returns
+ * false when the lease was lost to another worker (or the job was cancelled): the caller should
+ * stop. An expired lease that nobody has reclaimed still counts, since what it records did happen.
+ */
+export function saveProgress(
+  tx: Executor,
+  lease: Lease,
+  result: WriteBackResult,
+): Promise<boolean> {
+  return updateLeased(tx, lease, { result });
+}
+
 /** What happened when a job was put back in the queue. */
 export type RequeueResult = 'requeued' | 'superseded' | 'lease_lost';
 

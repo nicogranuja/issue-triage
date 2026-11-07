@@ -1,4 +1,4 @@
-import type { ReviewRequest } from '@issue-triage/shared';
+import type { ReviewRequest, WriteBackAttempt } from '@issue-triage/shared';
 import { eq, sql } from 'drizzle-orm';
 import { pino } from 'pino';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -17,7 +17,7 @@ import { submitReview } from '../../src/review/service.js';
 import { FakeTriageModel } from '../../src/triage/fake-model.js';
 import { RepositoryLabelCache } from '../../src/triage/labels.js';
 import { TriageWorker } from '../../src/triage/worker.js';
-import { planWriteBack } from '../../src/triage/write-back.js';
+import { mergeAttempt, planWriteBack } from '../../src/triage/write-back.js';
 import { createMigratedTestDatabase } from '../helpers/database.js';
 import { FakeGitHub } from '../helpers/fake-github.js';
 import { seedIssue, seedRepository, seedSuggestion } from '../helpers/seed.js';
@@ -57,6 +57,44 @@ describe('planWriteBack', () => {
         repositoryLabels: ['bug', 'needs triage'],
       }),
     ).toEqual({ add: [], remove: [], skipped: [] });
+  });
+});
+
+describe('mergeAttempt', () => {
+  const run = (attempt: number, changes: Partial<WriteBackAttempt> = {}): WriteBackAttempt => ({
+    attempt,
+    added: [],
+    removed: [],
+    skipped: [],
+    ...changes,
+  });
+
+  it('keeps each run and totals what all of them did', () => {
+    const first = mergeAttempt(null, run(1, { added: ['bug'] }), false);
+    expect(mergeAttempt(first, run(2, { removed: ['needs triage'] }), false)).toEqual({
+      added: ['bug'],
+      removed: ['needs triage'],
+      skipped: [],
+      dryRun: false,
+      attempts: [run(1, { added: ['bug'] }), run(2, { removed: ['needs triage'] })],
+    });
+  });
+
+  it("replaces a run's earlier progress with its latest", () => {
+    const partial = mergeAttempt(null, run(1, { added: ['bug'] }), false);
+    const done = mergeAttempt(partial, run(1, { added: ['bug'], removed: ['wontfix'] }), false);
+    expect(done.attempts).toEqual([run(1, { added: ['bug'], removed: ['wontfix'] })]);
+  });
+
+  it('drops a skipped label from the totals once a later run added it', () => {
+    const first = mergeAttempt(null, run(1, { skipped: ['area: export'] }), false);
+    const second = mergeAttempt(first, run(2, { added: ['area: export'] }), false);
+    expect(second).toMatchObject({ added: ['area: export'], skipped: [] });
+  });
+
+  it('reads results stored before runs were recorded', () => {
+    const legacy = { added: ['bug'], removed: [], skipped: [], dryRun: false };
+    expect(mergeAttempt(legacy, run(2), false).attempts).toEqual([run(2)]);
   });
 });
 
@@ -184,6 +222,7 @@ describe('write-back jobs', () => {
       removed: ['needs triage'],
       skipped: [],
       dryRun: false,
+      attempts: [{ attempt: 1, added: ['bug'], removed: ['needs triage'], skipped: [] }],
     });
   });
 
@@ -219,7 +258,11 @@ describe('write-back jobs', () => {
     };
     const worker = workerFor(github);
     await worker.runNext();
-    expect(await writeBackJob()).toMatchObject({ status: 'running', result: null });
+    // It could not finish the job, but what it did is on record.
+    expect(await writeBackJob()).toMatchObject({
+      status: 'running',
+      result: { added: ['bug'], removed: ['needs triage'] },
+    });
     expect(github.issueLabels.get(ISSUE)).toEqual(['bug']);
     const writesAfterFirstRun = github.writes.length;
     github.beforeAnswer = undefined;
@@ -232,7 +275,51 @@ describe('write-back jobs', () => {
     expect(await writeBackJob()).toMatchObject({
       status: 'succeeded',
       attempts: 2,
-      result: { added: [], removed: [], skipped: [], dryRun: false },
+      result: {
+        added: ['bug'],
+        removed: ['needs triage'],
+        attempts: [
+          { attempt: 1, added: ['bug'], removed: ['needs triage'] },
+          { attempt: 2, added: [], removed: [] },
+        ],
+      },
+    });
+  });
+
+  it('keeps what a failed run changed, and merges it with the retry', async () => {
+    const { github } = await reviewed({
+      decision: 'edit',
+      labels: ['bug'],
+      baseLabels: ['needs triage'],
+    });
+    // The labels are added, then removing one hits an outage.
+    github.failNext('DELETE', /labels\/needs%20triage$/, {
+      status: 503,
+      body: { message: 'Service Unavailable' },
+    });
+    const worker = workerFor(github);
+
+    await worker.runNext();
+    expect(await writeBackJob()).toMatchObject({
+      status: 'pending',
+      result: { added: ['bug'], removed: [], attempts: [{ attempt: 1, added: ['bug'] }] },
+    });
+
+    await db().execute(sql`update triage_jobs set run_after = now() where kind = 'write_back'`);
+    await worker.runNext();
+
+    expect(github.issueLabels.get(ISSUE)).toEqual(['bug']);
+    expect(await writeBackJob()).toMatchObject({
+      status: 'succeeded',
+      attempts: 2,
+      result: {
+        added: ['bug'],
+        removed: ['needs triage'],
+        attempts: [
+          { attempt: 1, added: ['bug'], removed: [] },
+          { attempt: 2, added: [], removed: ['needs triage'] },
+        ],
+      },
     });
   });
 

@@ -1,12 +1,17 @@
-import { labelKey, type WriteBackResult } from '@issue-triage/shared';
+import {
+  labelKey,
+  uniqueLabels,
+  type WriteBackAttempt,
+  type WriteBackResult,
+} from '@issue-triage/shared';
 import { eq } from 'drizzle-orm';
 
 import type { WriteBackMode } from '../config.js';
 import type { Database } from '../db/client.js';
-import { issues, repositories, reviews } from '../db/schema.js';
+import { issues, repositories, reviews, triageJobs } from '../db/schema.js';
 import type { GitHubClient } from '../github/client.js';
 import type { LabelSource } from './labels.js';
-import { cancelJob, completeJob, type ClaimedJob } from './queue.js';
+import { cancelJob, completeJob, saveProgress, type ClaimedJob } from './queue.js';
 
 /** The GitHub calls a write-back makes. */
 export type IssueLabelWriter = Pick<GitHubClient, 'getIssue' | 'addLabels' | 'removeLabel'>;
@@ -83,6 +88,33 @@ export function planWriteBack({
 }
 
 /**
+ * Folds one run into the job's record. A run that saves progress more than once replaces its own
+ * earlier entry. Totals are the union over runs; a label counts as skipped only if no run added it
+ * (it can be recreated in the repository between runs).
+ */
+export function mergeAttempt(
+  previous: WriteBackResult | null,
+  attempt: WriteBackAttempt,
+  dryRun: boolean,
+): WriteBackResult {
+  const attempts = [
+    ...(previous?.attempts ?? []).filter((entry) => entry.attempt !== attempt.attempt),
+    attempt,
+  ].sort((a, b) => a.attempt - b.attempt);
+  const added = uniqueLabels(attempts.flatMap((entry) => entry.added));
+  const addedKeys = new Set(added.map(labelKey));
+  return {
+    added,
+    removed: uniqueLabels(attempts.flatMap((entry) => entry.removed)),
+    skipped: uniqueLabels(attempts.flatMap((entry) => entry.skipped)).filter(
+      (name) => !addedKeys.has(labelKey(name)),
+    ),
+    dryRun,
+    attempts,
+  };
+}
+
+/**
  * Applies a review's label change to the issue on GitHub.
  *
  * The job is diff-based: it adds and removes specific labels, rather than replacing the issue's
@@ -90,6 +122,10 @@ export function planWriteBack({
  * removing an absent one change nothing), so a job that crashed half-way, or whose result failed
  * to save, can simply run again. Before each run it re-reads the repository's labels and the
  * issue's labels from GitHub, so it acts on the state of now, not of when the review was made.
+ *
+ * After each change it makes, it saves what it did so far on the job, so a run that fails part-way
+ * (a rate limit between adding and removing, say) still leaves a true record: the retry finds that
+ * part of the change already on GitHub and adds its own entry, and the totals cover both runs.
  *
  * In `dry-run` mode it plans against the labels stored here and records the plan, calling
  * nothing.
@@ -119,8 +155,10 @@ export async function runWriteBackJob(
       owner: repositories.owner,
       name: repositories.name,
       cachedLabels: repositories.labels,
+      previous: triageJobs.result,
     })
     .from(reviews)
+    .innerJoin(triageJobs, eq(triageJobs.id, job.jobId))
     .innerJoin(issues, eq(issues.id, job.issueId))
     .innerJoin(repositories, eq(repositories.id, issues.repositoryId))
     .where(eq(reviews.id, job.reviewId));
@@ -151,22 +189,35 @@ export async function runWriteBackJob(
     current,
     repositoryLabels,
   });
-  const removed: string[] = [];
+  const attempt: WriteBackAttempt = {
+    attempt: job.attempts,
+    added: [],
+    removed: [],
+    skipped: plan.skipped,
+  };
+  const record = () => mergeAttempt(row.previous, attempt, dryRun);
+  const lost: WriteBackOutcome = { status: 'lease_lost' };
   if (dryRun) {
-    removed.push(...plan.remove);
+    attempt.added = plan.add;
+    attempt.removed = plan.remove;
   } else {
     if (plan.add.length > 0) {
       await github.addLabels(row.owner, row.name, row.issueNumber, plan.add, { signal });
+      attempt.added = plan.add;
+      if (!(await saveProgress(db, job, record()))) {
+        return lost;
+      }
     }
     for (const label of plan.remove) {
       if (await github.removeLabel(row.owner, row.name, row.issueNumber, label, { signal })) {
-        removed.push(label);
+        attempt.removed = [...attempt.removed, label];
+        if (!(await saveProgress(db, job, record()))) {
+          return lost;
+        }
       }
     }
   }
 
-  const result: WriteBackResult = { added: plan.add, removed, skipped: plan.skipped, dryRun };
-  return (await completeJob(db, job, result))
-    ? { status: 'succeeded', result }
-    : { status: 'lease_lost' };
+  const result = record();
+  return (await completeJob(db, job, result)) ? { status: 'succeeded', result } : lost;
 }

@@ -60,14 +60,30 @@ export interface DuplicateCandidate {
   reason: string;
 }
 
-/** What a write-back job did to the issue's labels on GitHub. */
-export interface WriteBackResult {
-  /** Labels added to the issue. */
+/** What one run of a write-back job changed on GitHub. */
+export interface WriteBackAttempt {
+  /** Which run of the job this was, starting at 1. */
+  attempt: number;
   added: string[];
-  /** Labels removed from the issue. */
+  removed: string[];
+  /** Labels this run did not apply because the repository no longer has them. */
+  skipped: string[];
+}
+
+/**
+ * What a write-back job did to the issue's labels on GitHub, over all its runs. A run can fail
+ * part-way (a rate limit after the labels were added, say), and the retry then finds part of the
+ * change already made; the totals merge every run, and `attempts` says which run did what.
+ */
+export interface WriteBackResult {
+  /** Labels added to the issue, by any run. */
+  added: string[];
+  /** Labels removed from the issue, by any run. */
   removed: string[];
   /** Labels the review asked for that no longer exist in the repository, so were not applied. */
   skipped: string[];
   /** True when the job only planned the change (`WRITE_BACK_MODE=dry-run`) and wrote nothing. */
   dryRun: boolean;
+  /** Each run that got as far as working out the change, oldest first. Absent on old rows. */
+  attempts?: WriteBackAttempt[];
 }
