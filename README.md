@@ -68,8 +68,10 @@ To use a Postgres server instead, set `DATABASE_URL` in `.env` and apply migrati
 
 ### Receiving webhooks
 
-Create a repository webhook in GitHub that sends **Issues** events to `/webhooks/github` with
-content type `application/json` and the same secret as `GITHUB_WEBHOOK_SECRET`. To reach a local
+Create a repository webhook in GitHub that sends **Issues** and **Labels** events to
+`/webhooks/github` with content type `application/json` and the same secret as
+`GITHUB_WEBHOOK_SECRET`. Label events (a label created, edited, or deleted) mark the
+repository's cached label set stale, so the next triage job fetches it again. To reach a local
 server, forward deliveries with a tunnel, or with the
 [`gh webhook`](https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/using-the-github-cli-to-forward-webhooks-for-testing)
 CLI extension.
@@ -172,6 +174,17 @@ A write-back job turns a review into label changes on the issue:
   job whose worker crashed after calling GitHub is simply run again. A `PUT` of a computed final
   label set would be idempotent too, but it would also erase labels added on GitHub between the
   read and the write.
+- **Every run is on record.** A run that fails part-way (labels added, then a rate limit before a
+  removal) saves what it did after each change, so the retry's own entry and the totals together
+  say exactly which run changed what, shown in the Reviewed tab.
+- **A late retry never undoes a maintainer.** If someone changed one of the review's labels on
+  GitHub after the review (took off a label the review adds, or put back one it removes), the
+  job leaves it as they set it and records it as kept. It compares the issue's `updated_at` with
+  the review time, and only when the issue changed since does it read the issue's label events,
+  which say which labels changed and when. This job never takes off a label it adds or puts back
+  one it removes, so those events are always someone else's. GitHub's timestamps are whole
+  seconds from another clock, so a change up to 5 seconds before the review also counts as after
+  it: within that margin the person who changed the label on GitHub wins.
 - **Retries.** Rate limits, 5xx, and timeouts retry with the queue's exponential backoff
   (honoring `Retry-After`). `401`, `403` (the token lacks Issues write access, or the repository
   is archived), `404` (the issue is gone or invisible to the token), and `422` (GitHub rejected
@@ -205,8 +218,8 @@ job in the same transaction, so an issue is never saved without its job. A worke
 4. Validates the answer with Zod: labels must be in the repository's set, duplicates among the
    candidates that were sent, values in range. Invalid output gets one corrective turn with the
    list of problems; if that fails too, the job fails.
-5. Stores a pending suggestion with the model that answered, the prompt version, token usage,
-   and latency, and replaces any unreviewed suggestion for the same issue.
+5. Stores a pending suggestion with the model that answered, the prompt version, the effort
+   level, token usage, and latency, and replaces any unreviewed suggestion for the same issue.
 
 Issue text is untrusted input to the model. The prompt JSON-encodes it (with `<` escaped, so it
 cannot fake a tag boundary) and tells the model never to follow instructions inside it. The
@@ -221,9 +234,10 @@ limits, outages, and timeouts retry with exponential backoff and jitter (honorin
 up to `TRIAGE_MAX_ATTEMPTS`; authentication, unknown-model, and invalid-output errors fail at
 once. Deleted and transferred issues are marked removed and their jobs cancelled.
 
-The prompt has a version (`PROMPT_VERSION` in [`prompt.ts`](apps/api/src/triage/prompt.ts))
-stored on every suggestion, so prompt versions can be compared on the same issues. A test
-fingerprints the prompt and fails if it changes without a version bump.
+Prompt versions live in a registry in [`prompt.ts`](apps/api/src/triage/prompt.ts) and are
+never edited once released: a change is a new version. `TRIAGE_PROMPT_VERSION` picks one, and the
+version is stored on every suggestion, so versions can be compared on the same issues. A test
+fingerprints every version and fails if one changes.
 
 ### Configuration
 
@@ -232,6 +246,7 @@ fingerprints the prompt and fails if it changes without a version bump.
 | `TRIAGE_PROVIDER`           | (required)        | `anthropic`, `bedrock`, or `fake`                      |
 | `TRIAGE_MODEL`              | `claude-opus-5-5` | `anthropic.claude-opus-5-5` on Bedrock                 |
 | `TRIAGE_EFFORT`             | `medium`          | `low` to `max`: how much the model thinks              |
+| `TRIAGE_PROMPT_VERSION`     | `triage-v1`       | Which registered prompt version to use                 |
 | `TRIAGE_MODEL_TIMEOUT_MS`   | `60000`           | Per model request; a job's deadline is 3x this         |
 | `TRIAGE_WORKER_CONCURRENCY` | `1`               | Jobs at once in this process; `0` runs no worker       |
 | `TRIAGE_MAX_ATTEMPTS`       | `5`               | Runs per job before it fails for good                  |
@@ -271,6 +286,23 @@ ANTHROPIC_API_KEY=... npm run smoke:triage
 ```
 
 It does nothing without credentials, and it is not part of the test suite or CI.
+
+## Evals (in progress)
+
+The eval harness is being built. What exists so far is its labeled fixture set,
+[`apps/api/evals/fixtures/`](apps/api/evals/fixtures): 47 hand-written issues in three fictional
+repositories (a container registry, a notes app, and a map library). Each case has the
+repository's label set, ground-truth labels and priority, the existing issues it duplicates, and
+a reference summary with the key points a good summary covers; `notes` explain the calls a
+maintainer might make differently. Hard cases include ambiguous and multi-label issues, prompt
+injection in a body, a title, and a duplicate candidate, near-duplicates that aren't, very short
+and very long bodies, a non-English issue, and a security report in a repository with no
+security label. A test validates the set and checks that no case text appears in the prompts.
+
+Building it surfaced one measured limitation: one true duplicate (a paraphrase with no words in
+common) never reaches the model, because the TF-IDF pre-filter doesn't rank it as a candidate.
+It stays in the set. The runner, metrics, LLM judge, and comparison reports come next; no eval
+results have been produced yet.
 
 ## Tests and checks
 
