@@ -11,7 +11,6 @@ import {
   type TriageResult,
 } from './model.js';
 import { outputContext, suggestionSchema } from './output.js';
-import { PROMPT_VERSION } from './prompt.js';
 import { cancelJob, completeJob, type ClaimedJob } from './queue.js';
 
 export interface TriageJobDependencies {
@@ -110,6 +109,7 @@ export async function runTriageJob(
         tx,
         issue.id,
         { ...result, suggestion: checked.data },
+        { promptVersion: model.promptVersion, effort: model.effort },
         issueIdByNumber,
       );
       return { status: 'succeeded', suggestionId } as const;
@@ -126,6 +126,7 @@ async function saveSuggestion(
   tx: Transaction,
   issueId: number,
   { suggestion, model, usage, modelCalls, latencyMs }: TriageResult,
+  { promptVersion, effort }: Pick<TriageModel, 'promptVersion' | 'effort'>,
   issueIdByNumber: Map<number, number>,
 ): Promise<number> {
   // Reviewers see one pending suggestion per issue: the newest replaces any unreviewed one.
@@ -152,7 +153,8 @@ async function saveSuggestion(
       duplicatesConfidence: suggestion.duplicates.confidence,
       duplicatesRationale: suggestion.duplicates.rationale,
       model,
-      promptVersion: PROMPT_VERSION,
+      promptVersion,
+      effort,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       cacheReadInputTokens: usage.cacheReadInputTokens,

@@ -11,7 +11,7 @@ import {
   type TriageResult,
 } from './model.js';
 import { outputContext, outputJsonSchema, parseSuggestion, type ParseResult } from './output.js';
-import { correctionMessage, systemPrompt, userMessage } from './prompt.js';
+import { correctionMessage, PROMPT_VERSION, systemPrompt, userMessage } from './prompt.js';
 
 type MessageParams = Anthropic.Beta.MessageCreateParamsNonStreaming;
 
@@ -113,7 +113,8 @@ function toTriageError(error: unknown): unknown {
 export class MessagesTriageModel implements TriageModel {
   readonly provider: 'anthropic' | 'bedrock';
   readonly modelId: string;
-  readonly #effort: TriageEffort;
+  readonly effort: TriageEffort;
+  readonly promptVersion = PROMPT_VERSION;
   readonly #createMessage: CreateMessage;
   readonly #requestExtras: Partial<MessageParams>;
   readonly #now: () => number;
@@ -121,7 +122,7 @@ export class MessagesTriageModel implements TriageModel {
   constructor(options: MessagesTriageModelOptions) {
     this.provider = options.provider;
     this.modelId = options.modelId;
-    this.#effort = options.effort;
+    this.effort = options.effort;
     this.#createMessage = options.createMessage;
     this.#requestExtras = options.requestExtras ?? {};
     this.#now = options.now ?? (() => performance.now());
@@ -136,7 +137,7 @@ export class MessagesTriageModel implements TriageModel {
       max_tokens: MAX_TOKENS,
       // Thinking is left at the model default (adaptive on current models); effort sets its depth.
       output_config: {
-        effort: this.#effort,
+        effort: this.effort,
         format: { type: 'json_schema', schema: outputJsonSchema(context.labelNames) },
       },
       system: [

@@ -58,6 +58,10 @@ export interface TriageModel {
   readonly provider: TriageProvider;
   /** The configured model id, as sent to the provider. */
   readonly modelId: string;
+  /** The effort level sent with every request, or null when the provider has none. */
+  readonly effort: TriageEffort | null;
+  /** The prompt this model renders (see `prompt.ts`), stored on every suggestion. */
+  readonly promptVersion: string;
   /**
    * Suggests triage for one issue. Rejects with a {@link TriageModelError} when the provider
    * fails or its output cannot be used, and with the signal's reason when `signal` aborts.

@@ -28,6 +28,7 @@ import {
 } from 'drizzle-orm/pg-core';
 
 import type { GitHubLabel } from '../github/client.js';
+import { TRIAGE_EFFORTS } from '../triage/model.js';
 
 // GitHub ids fit comfortably in a JS number (2^53), so bigint columns map to `number`.
 const id = () => bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity();
@@ -43,6 +44,7 @@ export const reviewDecision = pgEnum('review_decision', REVIEW_DECISIONS);
 export const webhookDeliveryOutcome = pgEnum('webhook_delivery_outcome', ['processed', 'ignored']);
 export const triageJobStatus = pgEnum('triage_job_status', TRIAGE_JOB_STATUSES);
 export const jobKind = pgEnum('job_kind', JOB_KINDS);
+export const triageEffort = pgEnum('triage_effort', TRIAGE_EFFORTS);
 
 /**
  * Repositories we have received events for. Keyed internally by a surrogate id; `github_id` is
@@ -182,8 +184,8 @@ const confidenceRange = (column: AnyPgColumn) =>
 /**
  * Model output for an issue, awaiting human review. Written by the triage worker. Each judgement
  * (labels, priority, duplicates) carries the model's confidence and a one-sentence rationale for
- * the reviewer. `model`, `prompt_version`, token usage, and latency let evals compare prompt
- * versions and models on cost as well as quality.
+ * the reviewer. `model`, `prompt_version`, `effort`, token usage, and latency let evals compare
+ * prompt versions, models, and effort levels on cost as well as quality.
  */
 export const triageSuggestions = pgTable(
   'triage_suggestions',
@@ -209,6 +211,11 @@ export const triageSuggestions = pgTable(
     /** The model that answered, as reported by the provider (a fallback model, if one ran). */
     model: text('model').notNull(),
     promptVersion: text('prompt_version').notNull(),
+    /**
+     * The effort level the model was asked for. Null for providers without one (the fake model),
+     * and for suggestions made before it was recorded.
+     */
+    effort: triageEffort('effort'),
     inputTokens: integer('input_tokens').notNull(),
     outputTokens: integer('output_tokens').notNull(),
     cacheReadInputTokens: integer('cache_read_input_tokens').notNull(),

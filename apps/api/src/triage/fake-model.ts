@@ -1,6 +1,7 @@
 import type { Priority } from '@issue-triage/shared';
 
 import type { TriageInput, TriageModel, TriageResult, TriageSuggestion } from './model.js';
+import { PROMPT_VERSION } from './prompt.js';
 
 type Respond = (input: TriageInput) => TriageSuggestion | Promise<TriageSuggestion>;
 
@@ -19,11 +20,19 @@ const NO_USAGE = {
 export class FakeTriageModel implements TriageModel {
   readonly provider = 'fake';
   readonly modelId = 'fake-triage-model';
+  /** The fake doesn't think, so it has no effort level. */
+  readonly effort = null;
+  /** The fake ignores the prompt; this is only the version it reports. */
+  readonly promptVersion: string;
   readonly inputs: TriageInput[] = [];
   readonly #respond: Respond;
 
-  constructor({ respond = keywordSuggestion }: { respond?: Respond } = {}) {
+  constructor({
+    respond = keywordSuggestion,
+    promptVersion = PROMPT_VERSION,
+  }: { respond?: Respond; promptVersion?: string } = {}) {
     this.#respond = respond;
+    this.promptVersion = promptVersion;
   }
 
   async suggest(input: TriageInput, { signal }: { signal: AbortSignal }): Promise<TriageResult> {

@@ -45,6 +45,8 @@ function hangingModel(): { model: TriageModel; started: Promise<void> } {
   const model: TriageModel = {
     provider: 'fake',
     modelId: 'hanging',
+    effort: null,
+    promptVersion: PROMPT_VERSION,
     suggest: (_input, { signal }) =>
       new Promise<never>((_resolve, reject) => {
         markStarted();
@@ -146,9 +148,27 @@ describe('TriageWorker', () => {
         duplicatesConfidence: 0.8,
         model: 'fake-triage-model',
         promptVersion: PROMPT_VERSION,
+        effort: null,
         inputTokens: 0,
         modelCalls: 1,
       });
+    });
+
+    it('records the prompt version and effort the model ran with', async () => {
+      await seedJob();
+      const fake = new FakeTriageModel({ respond: suggestionFor });
+      const model: TriageModel = {
+        provider: 'anthropic',
+        modelId: 'claude-opus-5-5',
+        effort: 'high',
+        promptVersion: 'triage-v0-test',
+        suggest: (input, options) => fake.suggest(input, options),
+      };
+
+      await worker({ model }).runNext();
+
+      const [saved] = await suggestions();
+      expect(saved).toMatchObject({ promptVersion: 'triage-v0-test', effort: 'high' });
     });
 
     it('gives the model the repository labels and the pre-filtered candidates', async () => {
