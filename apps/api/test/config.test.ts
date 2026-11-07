@@ -19,6 +19,7 @@ describe('loadConfig', () => {
         provider: 'anthropic',
         model: 'claude-opus-5-5',
         effort: 'medium',
+        promptVersion: 'triage-v1',
         modelTimeoutMs: 60_000,
       },
       worker: { concurrency: 1, maxAttempts: 5, writeBackMode: 'github' },
@@ -135,6 +136,15 @@ describe('triage configuration', () => {
     ).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'low' });
     expect(() => load({ TRIAGE_PROVIDER: 'anthropic', TRIAGE_EFFORT: 'extreme' })).toThrow(
       /TRIAGE_EFFORT/,
+    );
+  });
+
+  it('accepts only released prompt versions', () => {
+    expect(
+      load({ TRIAGE_PROVIDER: 'anthropic', TRIAGE_PROMPT_VERSION: 'triage-v1' }).promptVersion,
+    ).toBe('triage-v1');
+    expect(() => load({ TRIAGE_PROVIDER: 'anthropic', TRIAGE_PROMPT_VERSION: 'v9' })).toThrow(
+      /TRIAGE_PROMPT_VERSION/,
     );
   });
 

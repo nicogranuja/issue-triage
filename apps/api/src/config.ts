@@ -1,6 +1,7 @@
 import { PRIORITIES, type PriorityLabels } from '@issue-triage/shared';
 import { z } from 'zod';
 
+import { PROMPT_VERSION, PROMPT_VERSIONS, type PromptVersion } from './triage/prompt.js';
 import {
   TRIAGE_EFFORTS,
   TRIAGE_PROVIDERS,
@@ -57,6 +58,8 @@ const processEnvSchema = databaseEnvSchema
     /** Overrides the provider's default model id. */
     TRIAGE_MODEL: z.string().min(1).optional(),
     TRIAGE_EFFORT: z.enum(TRIAGE_EFFORTS).default('medium'),
+    /** Which prompt version triage uses (see `triage/prompt.ts`). */
+    TRIAGE_PROMPT_VERSION: z.enum(PROMPT_VERSIONS).default(PROMPT_VERSION),
     /** Per request to the model; the SDK retries timeouts, within the job's overall deadline. */
     TRIAGE_MODEL_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
     /** Concurrent jobs in this process. 0 runs no worker here (for example, API-only servers). */
@@ -124,6 +127,7 @@ export interface TriageConfig {
   provider: TriageProvider;
   model: string;
   effort: TriageEffort;
+  promptVersion: PromptVersion;
   modelTimeoutMs: number;
   /** Set when the provider is Bedrock. */
   awsRegion?: string;
@@ -187,6 +191,7 @@ function toProcessConfig(env: z.output<typeof processEnvSchema>): ProcessConfig 
       provider: env.TRIAGE_PROVIDER,
       model: env.TRIAGE_MODEL ?? DEFAULT_TRIAGE_MODELS[env.TRIAGE_PROVIDER],
       effort: env.TRIAGE_EFFORT,
+      promptVersion: env.TRIAGE_PROMPT_VERSION,
       modelTimeoutMs: env.TRIAGE_MODEL_TIMEOUT_MS,
       ...(env.TRIAGE_PROVIDER === 'bedrock' && awsRegion && { awsRegion }),
     },

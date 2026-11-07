@@ -8,15 +8,20 @@ import {
   correctionMessage,
   MAX_BODY_CHARS,
   PROMPT_VERSION,
+  PROMPT_VERSIONS,
+  promptFor,
+  PROMPTS,
   systemPrompt,
   userMessage,
+  type TriagePrompt,
 } from '../../src/triage/prompt.js';
 import { sampleInput } from '../helpers/triage.js';
 
 /**
  * Fingerprints of each prompt version: instructions, rendering, and output schema. When this test
- * fails, the prompt changed: bump PROMPT_VERSION and add the new fingerprint here, so suggestions
- * made with different prompts are never compared as if they were the same.
+ * fails, a released prompt changed: put the change in a new version instead (and add its
+ * fingerprint here), so suggestions made with different prompts are never compared as if they
+ * were the same.
  */
 const FINGERPRINTS: Record<string, string> = {
   'triage-v1': 'b8f98e510cf746509b354d5f8b637cf2ea4ec52694b4f8d52fda47fa26d7e381',
@@ -37,12 +42,12 @@ const fingerprintInput: TriageInput = {
   candidates: [{ number: 1, title: 'Crash at startup', state: 'open', excerpt: 'panic: nil map' }],
 };
 
-function fingerprint(): string {
+function fingerprint(prompt: TriagePrompt): string {
   const parts = [
-    ...systemPrompt(fingerprintInput),
-    userMessage(fingerprintInput),
-    userMessage({ ...fingerprintInput, labels: [], candidates: [] }),
-    correctionMessage(['summary: Too long']),
+    ...prompt.systemPrompt(fingerprintInput),
+    prompt.userMessage(fingerprintInput),
+    prompt.userMessage({ ...fingerprintInput, labels: [], candidates: [] }),
+    prompt.correctionMessage(['summary: Too long']),
     JSON.stringify(outputJsonSchema(fingerprintInput.labels.map((label) => label.name))),
     JSON.stringify(outputJsonSchema([])),
   ];
@@ -59,11 +64,19 @@ function decodeTag(message: string, tag: string): unknown {
 }
 
 describe('prompt', () => {
-  it('has a recorded fingerprint for the current version', () => {
-    expect({ version: PROMPT_VERSION, fingerprint: fingerprint() }).toEqual({
-      version: PROMPT_VERSION,
-      fingerprint: FINGERPRINTS[PROMPT_VERSION],
+  it.each(PROMPT_VERSIONS)('has a recorded fingerprint for %s', (version) => {
+    expect({ version, fingerprint: fingerprint(PROMPTS[version]) }).toEqual({
+      version,
+      fingerprint: FINGERPRINTS[version],
     });
+  });
+
+  it('names each prompt by its version, and refuses unknown versions', () => {
+    for (const version of PROMPT_VERSIONS) {
+      expect(promptFor(version).version).toBe(version);
+    }
+    expect(PROMPT_VERSIONS).toContain(PROMPT_VERSION);
+    expect(() => promptFor('triage-v0')).toThrow(/Unknown prompt version/);
   });
 
   it('lists the repository labels in the system prompt', () => {

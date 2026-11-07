@@ -11,7 +11,7 @@ import {
   type TriageResult,
 } from './model.js';
 import { outputContext, outputJsonSchema, parseSuggestion, type ParseResult } from './output.js';
-import { correctionMessage, PROMPT_VERSION, systemPrompt, userMessage } from './prompt.js';
+import { PROMPTS, PROMPT_VERSION, type TriagePrompt } from './prompt.js';
 
 type MessageParams = Anthropic.Beta.MessageCreateParamsNonStreaming;
 
@@ -26,6 +26,8 @@ export interface MessagesTriageModelOptions {
   modelId: string;
   effort: TriageEffort;
   createMessage: CreateMessage;
+  /** The prompt to render. Defaults to the current default version. */
+  prompt?: TriagePrompt;
   /** Provider-specific request fields, such as server-side refusal fallbacks. */
   requestExtras?: Partial<MessageParams>;
   /** Monotonic clock in milliseconds, for latency. */
@@ -114,7 +116,8 @@ export class MessagesTriageModel implements TriageModel {
   readonly provider: 'anthropic' | 'bedrock';
   readonly modelId: string;
   readonly effort: TriageEffort;
-  readonly promptVersion = PROMPT_VERSION;
+  readonly promptVersion: string;
+  readonly #prompt: TriagePrompt;
   readonly #createMessage: CreateMessage;
   readonly #requestExtras: Partial<MessageParams>;
   readonly #now: () => number;
@@ -123,6 +126,8 @@ export class MessagesTriageModel implements TriageModel {
     this.provider = options.provider;
     this.modelId = options.modelId;
     this.effort = options.effort;
+    this.#prompt = options.prompt ?? PROMPTS[PROMPT_VERSION];
+    this.promptVersion = this.#prompt.version;
     this.#createMessage = options.createMessage;
     this.#requestExtras = options.requestExtras ?? {};
     this.#now = options.now ?? (() => performance.now());
@@ -130,7 +135,7 @@ export class MessagesTriageModel implements TriageModel {
 
   async suggest(input: TriageInput, { signal }: { signal: AbortSignal }): Promise<TriageResult> {
     const context = outputContext(input);
-    const [instructions, repository] = systemPrompt(input);
+    const [instructions, repository] = this.#prompt.systemPrompt(input);
     const request: Omit<MessageParams, 'messages'> = {
       ...this.#requestExtras,
       model: this.modelId,
@@ -147,7 +152,7 @@ export class MessagesTriageModel implements TriageModel {
       ],
     };
     const messages: Anthropic.Beta.BetaMessageParam[] = [
-      { role: 'user', content: userMessage(input) },
+      { role: 'user', content: this.#prompt.userMessage(input) },
     ];
 
     let usage = NO_USAGE;
@@ -180,7 +185,7 @@ export class MessagesTriageModel implements TriageModel {
       // Append-only: the reply goes back unchanged (thinking blocks included), then the fix-up.
       messages.push(
         { role: 'assistant', content: response.content },
-        { role: 'user', content: correctionMessage(problems) },
+        { role: 'user', content: this.#prompt.correctionMessage(problems) },
       );
     }
     throw new InvalidModelOutputError(problems);

@@ -52,7 +52,12 @@ export async function startTriageWorker(
     jobTimeoutMs: config.triage.modelTimeoutMs * MODEL_TIMEOUTS_PER_JOB,
   });
   logger.info(
-    { provider: model.provider, model: model.modelId, effort: config.triage.effort },
+    {
+      provider: model.provider,
+      model: model.modelId,
+      effort: config.triage.effort,
+      promptVersion: model.promptVersion,
+    },
     'triage model ready',
   );
   worker.start();

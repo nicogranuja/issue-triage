@@ -4,6 +4,7 @@ import type { TriageConfig } from '../config.js';
 import { FakeTriageModel } from './fake-model.js';
 import { MessagesTriageModel } from './messages-model.js';
 import type { TriageModel } from './model.js';
+import { PROMPTS } from './prompt.js';
 
 /**
  * Server-side refusal fallback (Anthropic API only). If the model's safety classifiers decline a
@@ -33,7 +34,7 @@ export async function createTriageModel(
   const transport = fetch ? { fetch } : {};
   switch (config.provider) {
     case 'fake':
-      return new FakeTriageModel();
+      return new FakeTriageModel({ promptVersion: config.promptVersion });
 
     case 'anthropic': {
       const client = new Anthropic({
@@ -45,6 +46,7 @@ export async function createTriageModel(
         provider: 'anthropic',
         modelId: config.model,
         effort: config.effort,
+        prompt: PROMPTS[config.promptVersion],
         createMessage: (params, options) => client.beta.messages.create(params, options),
         requestExtras: ANTHROPIC_REQUEST_EXTRAS,
       });
@@ -63,6 +65,7 @@ export async function createTriageModel(
         provider: 'bedrock',
         modelId: config.model,
         effort: config.effort,
+        prompt: PROMPTS[config.promptVersion],
         createMessage: (params, options) => client.beta.messages.create(params, options),
       });
     }
