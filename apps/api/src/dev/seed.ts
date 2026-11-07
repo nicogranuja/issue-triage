@@ -57,7 +57,7 @@ const NO_DUPLICATES: NonNullable<DemoSuggestion['duplicates']> = [
 
 export const DEMO_REPOSITORIES: DemoRepository[] = [
   {
-    githubId: 990_000_001,
+    githubId: -1,
     owner: 'lumen-labs',
     name: 'lumen',
     labels: [
@@ -301,7 +301,7 @@ export const DEMO_REPOSITORIES: DemoRepository[] = [
     ],
   },
   {
-    githubId: 990_000_002,
+    githubId: -2,
     owner: 'lumen-labs',
     name: 'lumen-agent',
     labels: [
@@ -394,7 +394,9 @@ export async function seedDemoData(db: Database, now: Date = new Date()): Promis
       ),
     );
 
-    let issueGithubId = 990_100_000;
+    // Negative GitHub ids can never belong to a real repository or issue, so demo rows can't
+    // collide with (or, on reseed, delete) real ones in the same database.
+    let issueGithubId = -1000;
     const pending: { issue: DemoIssue; issueId: number; idByNumber: Map<number, number> }[] = [];
     for (const demo of DEMO_REPOSITORIES) {
       const labels: GitHubLabel[] = demo.labels.map(([name, color, description]) => ({
@@ -420,7 +422,7 @@ export async function seedDemoData(db: Database, now: Date = new Date()): Promis
 
       const idByNumber = new Map<number, number>();
       for (const issue of demo.issues) {
-        issueGithubId += 1;
+        issueGithubId -= 1;
         const openedAt = new Date(now.getTime() - issue.hoursAgo * HOUR_MS);
         const [row] = await tx
           .insert(issues)
