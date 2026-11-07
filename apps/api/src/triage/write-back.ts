@@ -4,11 +4,12 @@ import {
   type WriteBackAttempt,
   type WriteBackResult,
 } from '@issue-triage/shared';
-import { eq } from 'drizzle-orm';
+import { and, eq, gt } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import type { WriteBackMode } from '../config.js';
 import type { Database } from '../db/client.js';
-import { issues, repositories, reviews, triageJobs } from '../db/schema.js';
+import { issues, repositories, reviews, triageJobs, triageSuggestions } from '../db/schema.js';
 import type { GitHubClient, LabelEvent } from '../github/client.js';
 import type { LabelSource } from './labels.js';
 import { cancelJob, completeJob, saveProgress, type ClaimedJob } from './queue.js';
@@ -108,8 +109,9 @@ export const CLOCK_SKEW_ALLOWANCE_MS = 5_000;
  * - a label the review removes, that was put on again since, stays on.
  *
  * This job never takes off a label it adds or puts back one it removes, so these events are always
- * someone else's (a person, another app, or the write-back of a later review, whose decision is
- * newer anyway). Labels the plan doesn't touch, and changes from before the review, are not
+ * someone else's: a person, another app, or the write-back of a later review. (A job whose review
+ * has been followed by a newer review of the same issue cancels itself before this point, so an
+ * older decision never overrides a newer one.) Labels the plan doesn't touch, and changes from before the review, are not
  * considered: the review already accounted for those.
  */
 export function respectChangesSince(
@@ -142,8 +144,9 @@ export function changesCountFrom(reviewedAt: Date): Date {
 }
 
 /**
- * Folds one run into the job's record. A run that saves progress more than once replaces its own
- * earlier entry. Totals are the union over runs; a label counts as skipped only if no run added it
+ * Folds one run into the job's record. A run that saves progress more than once updates its own
+ * entry; entries with the same number are merged rather than replaced, because a run interrupted
+ * by a shutdown gives its attempt back, so the next run reuses its number. Totals are the union over runs; a label counts as skipped only if no run added it
  * (it can be recreated in the repository between runs).
  */
 export function mergeAttempt(
@@ -151,10 +154,20 @@ export function mergeAttempt(
   attempt: WriteBackAttempt,
   dryRun: boolean,
 ): WriteBackResult {
-  const attempts = [
-    ...(previous?.attempts ?? []).filter((entry) => entry.attempt !== attempt.attempt),
-    attempt,
-  ].sort((a, b) => a.attempt - b.attempt);
+  const earlier = previous?.attempts ?? [];
+  const same = earlier.find((entry) => entry.attempt === attempt.attempt);
+  const merged: WriteBackAttempt = same
+    ? {
+        attempt: attempt.attempt,
+        added: uniqueLabels([...same.added, ...attempt.added]),
+        removed: uniqueLabels([...same.removed, ...attempt.removed]),
+        skipped: attempt.skipped,
+        kept: uniqueLabels([...same.kept, ...attempt.kept]),
+      }
+    : attempt;
+  const attempts = [...earlier.filter((entry) => entry !== same), merged].sort(
+    (a, b) => a.attempt - b.attempt,
+  );
   const added = uniqueLabels(attempts.flatMap((entry) => entry.added));
   const addedKeys = new Set(added.map(labelKey));
   return {
@@ -183,8 +196,10 @@ export function mergeAttempt(
  * then does the job read the issue's label events, which say exactly which labels changed and when.
  *
  * After each change it makes, it saves what it did so far on the job, so a run that fails part-way
- * (a rate limit between adding and removing, say) still leaves a true record: the retry finds that
- * part of the change already on GitHub and adds its own entry, and the totals cover both runs.
+ * (a rate limit between adding and removing, say) keeps a record of it: the retry finds that part
+ * of the change already on GitHub and adds its own entry, and the totals cover both runs. A change
+ * can still go unrecorded if the process dies, or the save fails, between a GitHub call and the
+ * save that follows it; the retry then sees the label already in place and records nothing.
  *
  * In `dry-run` mode it plans against the labels stored here and records the plan, calling
  * nothing.
@@ -227,6 +242,20 @@ export async function runWriteBackJob(
   }
   if (row.removedAt !== null) {
     return cancel('Issue was removed from GitHub');
+  }
+  // Two reviews of one issue (it changed and was triaged again) can both have write-backs waiting,
+  // and a retrying older one may run last. The newer review's label change is the newer decision.
+  // A newer review that changes no labels (a rejection, say) has no write-back and doesn't count.
+  const newerJob = alias(triageJobs, 'newer_job');
+  const [newer] = await db
+    .select({ id: reviews.id })
+    .from(reviews)
+    .innerJoin(triageSuggestions, eq(triageSuggestions.id, reviews.suggestionId))
+    .innerJoin(newerJob, eq(newerJob.reviewId, reviews.id))
+    .where(and(eq(triageSuggestions.issueId, job.issueId), gt(reviews.id, job.reviewId)))
+    .limit(1);
+  if (newer) {
+    return cancel('Superseded by a newer review of the same issue');
   }
 
   const dryRun = mode === 'dry-run';

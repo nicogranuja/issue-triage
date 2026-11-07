@@ -132,6 +132,13 @@ describe('mergeAttempt', () => {
     });
   });
 
+  it('merges runs that share a number, as after a shutdown gave the attempt back', () => {
+    const interrupted = mergeAttempt(null, run(1, { added: ['bug'] }), false);
+    const rerun = mergeAttempt(interrupted, run(1, { removed: ['wontfix'] }), false);
+    expect(rerun.attempts).toEqual([run(1, { added: ['bug'], removed: ['wontfix'] })]);
+    expect(rerun).toMatchObject({ added: ['bug'], removed: ['wontfix'] });
+  });
+
   it("replaces a run's earlier progress with its latest", () => {
     const partial = mergeAttempt(null, run(1, { added: ['bug'] }), false);
     const done = mergeAttempt(partial, run(1, { added: ['bug'], removed: ['wontfix'] }), false);
@@ -544,6 +551,27 @@ describe('write-back jobs', () => {
       status: 'succeeded',
       result: { added: ['bug'], removed: ['needs triage'], skipped: [], dryRun: true },
     });
+  });
+
+  it("cancels an older review's write-back once a newer review of the issue has its own", async () => {
+    const { github, issue } = await reviewed({ decision: 'accept' });
+    // The issue changed, was triaged again, and the new suggestion was reviewed too.
+    const newer = await seedSuggestion(db(), issue.id, { labels: ['regression'] });
+    await submitReview(
+      db(),
+      newer.id,
+      { decision: 'accept' },
+      { priorityLabels: {}, writeBackDelayMs: 0 },
+    );
+
+    await workerFor(github).runNext();
+
+    const jobs = await db().select().from(triageJobs).orderBy(triageJobs.id);
+    expect(jobs.map((job) => [job.status, job.lastError])).toEqual([
+      ['cancelled', 'Superseded by a newer review of the same issue'],
+      ['pending', null],
+    ]);
+    expect(github.writes).toEqual([]);
   });
 
   it('cancels the write-back of an issue removed from GitHub', async () => {
