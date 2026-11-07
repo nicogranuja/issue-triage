@@ -63,14 +63,40 @@ describe('eval fixtures', () => {
   });
 
   it('share no text with the prompts, so nothing about a case leaks into the instructions', () => {
+    // Every fixed part of every prompt, rendered for an empty issue, against every run of eight
+    // words in each case's issue, reference summary, key points, and notes.
     const empty = { repository: 'x/y', issue: { number: 1, title: 't', body: null } };
-    const instructions = Object.values(PROMPTS)
-      .map((prompt) => prompt.systemPrompt({ ...empty, labels: [], candidates: [] })[0])
-      .join('\n')
-      .toLowerCase();
-    for (const { fixture, c } of cases) {
-      expect(instructions, c.id).not.toContain(c.issue.title.toLowerCase());
-      expect(instructions).not.toContain(fixture.repository.toLowerCase());
-    }
+    const fixedText = Object.values(PROMPTS)
+      .flatMap((prompt) => [
+        prompt.systemPrompt({ ...empty, labels: [], candidates: [] })[0],
+        prompt.userMessage({ ...empty, labels: [], candidates: [] }),
+        prompt.correctionMessage([]),
+      ])
+      .join('\n');
+    const promptWords = words(fixedText).join(' ');
+    const leaks = cases.flatMap(({ fixture, c }) => {
+      const text = [
+        fixture.repository,
+        c.issue.title,
+        c.issue.body ?? '',
+        c.expected.summary?.reference ?? '',
+        ...(c.expected.summary?.keyPoints ?? []),
+        c.notes ?? '',
+      ].join('\n');
+      const tokens = words(text);
+      return tokens
+        .slice(0, Math.max(0, tokens.length - 7))
+        .map((_, i) => tokens.slice(i, i + 8).join(' '))
+        .filter((run) => promptWords.includes(run))
+        .map((run) => `${c.id}: ${run}`);
+    });
+    expect(leaks).toEqual([]);
   });
 });
+
+function words(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+}
