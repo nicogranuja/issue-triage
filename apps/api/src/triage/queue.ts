@@ -272,7 +272,7 @@ export type RequeueResult = 'requeued' | 'superseded' | 'lease_lost';
 const ONE_PENDING_JOB_PER_ISSUE = 'triage_jobs_one_pending_per_issue_key';
 
 /** Postgres error 23505 on the given constraint, wherever it sits in the error's cause chain. */
-function isUniqueViolation(error: unknown, constraint: string): boolean {
+export function isUniqueViolation(error: unknown, constraint: string): boolean {
   for (let current = error; current instanceof Error; current = current.cause) {
     const { code, constraint: name } = current as { code?: unknown; constraint?: unknown };
     if (code === '23505' && name === constraint) {

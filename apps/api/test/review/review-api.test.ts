@@ -433,6 +433,39 @@ describe('review API', () => {
       });
     });
 
+    it('answers 409, not 500, when a newer suggestion lands while undoing', async () => {
+      const { suggestion } = await pendingSuggestion();
+      await review(suggestion.id, { decision: 'reject' });
+      // Stands in for a triage run committing a new pending suggestion in the middle of the undo,
+      // after its check: the undo's own update then collides with it.
+      await db().execute(sql`
+        create function race_undo() returns trigger language plpgsql as $$
+        begin
+          insert into triage_suggestions (issue_id, summary, labels, labels_confidence,
+            labels_rationale, priority, priority_confidence, priority_rationale,
+            duplicates_confidence, duplicates_rationale, model, prompt_version, input_tokens,
+            output_tokens, cache_read_input_tokens, cache_creation_input_tokens, model_calls,
+            latency_ms)
+          values (new.issue_id, 'Newer.', '{}', 0.5, 'x', 'low', 0.5, 'x', 0.5, 'x', 'fake',
+            'triage-v1', 0, 0, 0, 0, 1, 0);
+          return new;
+        end $$`);
+      await db().execute(sql`
+        create trigger race_undo before update on triage_suggestions
+        for each row when (new.status = 'pending' and old.status = 'reviewed')
+        execute function race_undo()`);
+      try {
+        const response = await undo(suggestion.id);
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toMatchObject({ code: 'superseded' });
+        expect(await suggestionStatus(suggestion.id)).toBe('reviewed');
+      } finally {
+        await db().execute(sql`drop trigger race_undo on triage_suggestions`);
+        await db().execute(sql`drop function race_undo()`);
+      }
+    });
+
     it('answers 404 when there is no review to undo', async () => {
       const { suggestion } = await pendingSuggestion();
       expect((await undo(suggestion.id)).statusCode).toBe(404);

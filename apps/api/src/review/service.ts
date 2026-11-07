@@ -12,7 +12,7 @@ import { and, eq, sql } from 'drizzle-orm';
 
 import type { Database, Transaction } from '../db/client.js';
 import { issues, repositories, reviews, triageJobs, triageSuggestions } from '../db/schema.js';
-import { enqueueWriteBackJob } from '../triage/queue.js';
+import { enqueueWriteBackJob, isUniqueViolation } from '../triage/queue.js';
 import { findPendingSuggestionId, findReview, writeBackUntouched } from './queries.js';
 
 /**
@@ -229,6 +229,24 @@ async function requireReview(tx: Transaction, suggestionId: number): Promise<Rev
  * rows), and a job a worker already claimed is seen as running and refuses the undo.
  */
 export async function undoReview(db: Database, suggestionId: number): Promise<void> {
+  try {
+    await undoInTransaction(db, suggestionId);
+  } catch (error) {
+    // A triage run saved a newer pending suggestion for the issue after the check below but
+    // before this commit: the one-pending-per-issue index refuses the second one.
+    if (isUniqueViolation(error, ONE_PENDING_SUGGESTION_PER_ISSUE)) {
+      throw new ReviewConflictError(
+        'superseded',
+        'The issue changed and was triaged again since the review; review the new suggestion.',
+      );
+    }
+    throw error;
+  }
+}
+
+const ONE_PENDING_SUGGESTION_PER_ISSUE = 'triage_suggestions_one_pending_per_issue_key';
+
+async function undoInTransaction(db: Database, suggestionId: number): Promise<void> {
   await db.transaction(async (tx) => {
     const suggestion = await lockSuggestion(tx, suggestionId);
     const [review] = suggestion
