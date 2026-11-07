@@ -184,7 +184,9 @@ A write-back job turns a review into label changes on the issue:
   which say which labels changed and when. This job never takes off a label it adds or puts back
   one it removes, so those events are always someone else's. GitHub's timestamps are whole
   seconds from another clock, so a change up to 5 seconds before the review also counts as after
-  it: within that margin the person who changed the label on GitHub wins.
+  it: within that margin the person who changed the label on GitHub wins. And when the issue was
+  triaged and reviewed again, an older review's write-back that hasn't run yet is cancelled: the
+  newer review is the newer decision.
 - **Retries.** Rate limits, 5xx, and timeouts retry with the queue's exponential backoff
   (honoring `Retry-After`). `401`, `403` (the token lacks Issues write access, or the repository
   is archived), `404` (the issue is gone or invisible to the token), and `422` (GitHub rejected
