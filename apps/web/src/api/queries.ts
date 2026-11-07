@@ -87,15 +87,25 @@ export function useRecentReviews({ enabled }: { enabled: boolean }) {
   });
 }
 
-/** Every cached queue page, with the given suggestion taken out. */
-function withoutSuggestion(data: QueuePages | undefined, id: number): QueuePages | undefined {
-  if (!data) {
-    return data;
+/** Where a suggestion sat in one cached queue, so a failed review can put it back there. */
+interface Position {
+  page: number;
+  index: number;
+  item: QueueItem;
+}
+
+function findPosition(data: QueuePages | undefined, id: number): Position | null {
+  for (const [page, { items }] of (data?.pages ?? []).entries()) {
+    const index = items.findIndex((item) => item.suggestionId === id);
+    const item = items[index];
+    if (item) {
+      return { page, index, item };
+    }
   }
-  const removed = data.pages.some((page) => page.items.some((item) => item.suggestionId === id));
-  if (!removed) {
-    return data;
-  }
+  return null;
+}
+
+function withoutSuggestion(data: QueuePages, id: number): QueuePages {
   return {
     ...data,
     pages: data.pages.map((page) => ({
@@ -106,19 +116,37 @@ function withoutSuggestion(data: QueuePages | undefined, id: number): QueuePages
   };
 }
 
+function withSuggestionAt(data: QueuePages, { page, index, item }: Position): QueuePages {
+  if (findPosition(data, item.suggestionId)) {
+    return data;
+  }
+  return {
+    ...data,
+    pages: data.pages.map((current, pageIndex) => ({
+      ...current,
+      items: pageIndex === page ? current.items.toSpliced(index, 0, item) : current.items,
+      total: current.total + 1,
+    })),
+  };
+}
+
+const REVIEW_MUTATION = ['review'] as const;
+
 export interface ReviewVariables {
-  item: QueueItem;
+  suggestionId: number;
+  issueNumber: number;
   request: ReviewRequest;
 }
 
 interface ReviewContext {
-  snapshots: [QueryKey, QueuePages | undefined][];
+  positions: [QueryKey, Position][];
 }
 
 /**
- * Submits a review optimistically: the suggestion leaves every cached queue at once, and comes
- * back exactly where it was if the API refuses or fails. Either way the queue is refetched
- * afterwards, so it ends up matching the server.
+ * Submits a review optimistically: the suggestion leaves every cached queue at once, and if the
+ * API refuses or fails, it goes back exactly where it was. Only that suggestion is put back, so
+ * other reviews still in flight stay out. Either way the queue is refetched afterwards, so it
+ * ends up matching the server.
  */
 export function useReviewMutation({
   onSuccess,
@@ -129,26 +157,40 @@ export function useReviewMutation({
 }) {
   const client = useQueryClient();
   return useMutation<Review, ApiError, ReviewVariables, ReviewContext>({
-    mutationFn: ({ item, request }) => api.review(item.suggestionId, request),
-    onMutate: async ({ item }) => {
+    mutationKey: REVIEW_MUTATION,
+    mutationFn: ({ suggestionId, request }) => api.review(suggestionId, request),
+    onMutate: async ({ suggestionId }) => {
       // A refetch landing now would put the item back before the review is saved.
       await client.cancelQueries({ queryKey: queryKeys.allQueues });
-      const snapshots = client.getQueriesData<QueuePages>({ queryKey: queryKeys.allQueues });
-      client.setQueriesData<QueuePages>({ queryKey: queryKeys.allQueues }, (data) =>
-        withoutSuggestion(data, item.suggestionId),
-      );
-      return { snapshots };
+      const positions: [QueryKey, Position][] = [];
+      for (const [key, data] of client.getQueriesData<QueuePages>({
+        queryKey: queryKeys.allQueues,
+      })) {
+        const position = findPosition(data, suggestionId);
+        if (data && position) {
+          positions.push([key, position]);
+          client.setQueryData<QueuePages>(key, withoutSuggestion(data, suggestionId));
+        }
+      }
+      return { positions };
     },
     onError: (error, variables, context) => {
-      for (const [key, data] of context?.snapshots ?? []) {
-        client.setQueryData(key, data);
+      for (const [key, position] of context?.positions ?? []) {
+        client.setQueryData<QueuePages>(key, (data) =>
+          data ? withSuggestionAt(data, position) : data,
+        );
       }
       onError(error, variables);
     },
     onSuccess,
-    onSettled: (_review, _error, { item }) => {
+    onSettled: (_review, _error, { suggestionId }) => {
+      void client.invalidateQueries({ queryKey: queryKeys.suggestion(suggestionId) });
+      // Refetching the queue while another review is still on its way would bring that one
+      // back; the last review to settle refetches for all of them. (This one still counts.)
+      if (client.isMutating({ mutationKey: REVIEW_MUTATION }) > 1) {
+        return;
+      }
       void client.invalidateQueries({ queryKey: queryKeys.allQueues });
-      void client.invalidateQueries({ queryKey: queryKeys.suggestion(item.suggestionId) });
       void client.invalidateQueries({ queryKey: queryKeys.repositories });
       void client.invalidateQueries({ queryKey: queryKeys.reviews });
     },

@@ -167,6 +167,20 @@ describe('keyboard shortcuts', () => {
     expect(document.activeElement).toHaveAttribute('aria-current', 'true');
   });
 
+  it('opens with Enter on a focused row too, focusing the detail', async () => {
+    const { user } = await renderApp(threeSuggestions());
+    await detailHeading('Issue number 1');
+
+    await user.keyboard('j');
+    expect(document.activeElement).toHaveAttribute('aria-current', 'true');
+    const heading = await detailHeading('Issue number 2');
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(heading).toHaveFocus();
+    });
+  });
+
   it('shows and hides the shortcut help with ?, and closes it with Esc', async () => {
     const api = threeSuggestions();
     const { user } = await renderApp(api);

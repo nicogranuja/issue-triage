@@ -44,12 +44,35 @@ describe('optimistic reviews', () => {
     const alert = await screen.findByRole('alert');
     expect(
       await within(alert).findByText(
-        'Couldn’t save the review of #2: Internal Server Error It’s back in the queue.',
+        'Couldn’t save the review of #2: Internal Server Error. It’s back in the queue.',
       ),
     ).toBeInTheDocument();
     await waitFor(() => {
       expect(rowTitles()).toEqual(['Issue number 1', 'Issue number 2', 'Issue number 3']);
     });
+  });
+
+  it('puts back only the failed review, not another one still in flight', async () => {
+    const api = new FakeApi([suggestion(1), suggestion(2), suggestion(3)]);
+    const { user } = await renderApp(api);
+    await screen.findByRole('heading', { level: 2, name: 'Issue number 1' });
+    const first = deferred();
+    api.replyNext({ status: 500, body: { error: 'Internal Server Error' } }, first.promise);
+    await user.keyboard('a');
+    await screen.findByRole('heading', { level: 2, name: 'Issue number 2' });
+    const second = deferred();
+    api.replyNext({ status: 200 }, second.promise);
+    await user.keyboard('a');
+    expect(rowTitles()).toEqual(['Issue number 3']);
+
+    // The first fails while the second is still waiting for its answer.
+    first.release();
+    await screen.findByRole('alert');
+    await waitFor(() => {
+      expect(rowTitles()).toEqual(['Issue number 1', 'Issue number 3']);
+    });
+    second.release();
+    await screen.findByText('Accepted #2.');
   });
 
   it('shows why when the suggestion is stale (409)', async () => {

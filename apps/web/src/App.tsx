@@ -1,4 +1,4 @@
-import type { QueueFilters, QueueItem, Review, ReviewRequest } from '@issue-triage/shared';
+import type { QueueFilters, Review, ReviewRequest } from '@issue-triage/shared';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -52,6 +52,11 @@ function isInteractive(target: EventTarget | null): boolean {
   );
 }
 
+/** Matches the CSS breakpoint below which the list and the detail are shown one at a time. */
+function isNarrow(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia('(width < 52rem)').matches;
+}
+
 function inQueueList(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest('[data-queue-list]') !== null;
 }
@@ -98,17 +103,22 @@ export function App() {
     if (!focusRequest || focusRequest.tick === handledFocus.current) {
       return;
     }
-    const element =
-      focusRequest.target === 'heading'
-        ? heading.current
-        : shownId === null
-          ? null
-          : rows.current.get(shownId);
-    if (element) {
-      element.focus();
-      handledFocus.current = focusRequest.tick;
+    // On a narrow screen the open detail hides the list, so focus goes to the detail instead.
+    const target =
+      focusRequest.target === 'row' && open && isNarrow() ? 'heading' : focusRequest.target;
+    if (target === 'heading') {
+      // The detail may still be loading; the request waits for its heading.
+      if (heading.current) {
+        heading.current.focus();
+        handledFocus.current = focusRequest.tick;
+      }
+      return;
     }
-  }, [focusRequest, shownId, items, detail.data]);
+    // A row that isn't there (the queue is empty, or the item left it) drops the request, so it
+    // can't steal focus later when the queue refreshes.
+    rows.current.get(shownId ?? -1)?.focus();
+    handledFocus.current = focusRequest.tick;
+  }, [focusRequest, open, shownId, items, detail.data]);
 
   useEffect(() => {
     writeUrlState({ filters, view, selected: selectedId });
@@ -167,7 +177,7 @@ export function App() {
   };
 
   const review = useReviewMutation({
-    onSuccess: (saved, { item }) => {
+    onSuccess: (saved, { suggestionId, issueNumber }) => {
       // The server says how long undo lasts, by its own clock; stop offering it a little early
       // so a click doesn't race the worker. Nothing to write means no deadline: offer it for a
       // short while.
@@ -175,19 +185,19 @@ export function App() {
         Date.now() +
         (saved.undoWindowMs === null ? NO_DEADLINE_UNDO_MS : saved.undoWindowMs - 1_000);
       const undoable = saved.undoable && until > Date.now();
-      setLastReview(undoable ? { suggestionId: item.suggestionId, until } : null);
+      setLastReview(undoable ? { suggestionId, until } : null);
       const nothingToWrite =
         saved.writeBack === null && saved.decision !== 'rejected'
           ? ' Its labels were already up to date.'
           : '';
       toasts.show({
-        message: `${PAST_TENSE[saved.decision]} #${item.issue.number}.${nothingToWrite}`,
+        message: `${PAST_TENSE[saved.decision]} #${issueNumber}.${nothingToWrite}`,
         ...(undoable && {
           action: {
             label: 'Undo',
             shortcut: 'U',
             run: () => {
-              undoSuggestion(item.suggestionId);
+              undoSuggestion(suggestionId);
             },
           },
           durationMs: Math.max(2_000, Math.min(8_000, until - Date.now())),
@@ -195,15 +205,16 @@ export function App() {
       });
     },
     onError: (error: ApiError, variables) => {
-      const { item } = variables;
+      const { suggestionId, issueNumber } = variables;
       if (error.conflict) {
         // Show why: the newer suggestion, or this one with its "can't review" note.
-        select(error.conflict.currentSuggestionId ?? item.suggestionId, 'row');
-        toasts.show({ message: `#${item.issue.number}: ${error.message}`, tone: 'error' });
+        select(error.conflict.currentSuggestionId ?? suggestionId, 'row');
+        toasts.show({ message: `#${issueNumber}: ${error.message}`, tone: 'error' });
         return;
       }
+      const reason = /[.!?]$/.test(error.message) ? error.message : `${error.message}.`;
       toasts.show({
-        message: `Couldn’t save the review of #${item.issue.number}: ${error.message} It’s back in the queue.`,
+        message: `Couldn’t save the review of #${issueNumber}: ${reason} It’s back in the queue.`,
         tone: 'error',
         action: {
           label: 'Retry',
@@ -215,25 +226,25 @@ export function App() {
     },
   });
 
+  // What the reviewer sees in the detail is what they review, even when it isn't among the loaded
+  // queue rows (a link to it, or a refresh that just dropped it).
+  const shown = detail.data?.id === shownId ? detail.data : undefined;
   const reviewable =
-    shownItem !== undefined &&
-    detail.data?.id === shownItem.suggestionId &&
-    detail.data.status === 'pending' &&
-    detail.data.issue.state === 'open' &&
-    !detail.data.issue.removed;
+    shown?.status === 'pending' && shown.issue.state === 'open' && !shown.issue.removed;
 
-  const submit = (item: QueueItem, request: ReviewRequest) => {
+  const submit = (request: ReviewRequest) => {
+    if (!shown || !reviewable) {
+      return;
+    }
     // Move on at once: to the next row, or the previous one at the end of the list.
-    const index = items.indexOf(item);
-    const next = items[index + 1] ?? items[index - 1] ?? null;
+    const next =
+      shownIndex === -1 ? null : (items[shownIndex + 1] ?? items[shownIndex - 1] ?? null);
     select(next?.suggestionId ?? null, 'row');
-    review.mutate({ item, request });
+    review.mutate({ suggestionId: shown.id, issueNumber: shown.issue.number, request });
   };
 
   const decide = (decision: 'accept' | 'reject') => {
-    if (shownItem && reviewable) {
-      submit(shownItem, { decision });
-    }
+    submit({ decision });
   };
 
   const startEditing = () => {
@@ -335,7 +346,8 @@ export function App() {
       {
         key: 'o',
         run: () => {
-          const url = shownItem && safeHttpUrl(shownItem.issue.htmlUrl);
+          const href = shown?.issue.htmlUrl ?? shownItem?.issue.htmlUrl;
+          const url = href === undefined ? null : safeHttpUrl(href);
           if (url) {
             window.open(url, '_blank', 'noopener,noreferrer');
           }
@@ -461,9 +473,7 @@ export function App() {
                     select(id);
                   }
                 }}
-                onOpen={() => {
-                  setOpen(true);
-                }}
+                onOpen={openDetail}
                 registerItem={registerRow}
                 hasMore={queue.hasNextPage}
                 loadingMore={queue.isFetchingNextPage}
@@ -503,11 +513,7 @@ export function App() {
                 }}
                 onEdit={startEditing}
                 onCancelEdit={close}
-                onSubmitEdit={(request) => {
-                  if (shownItem && reviewable) {
-                    submit(shownItem, request);
-                  }
-                }}
+                onSubmitEdit={submit}
                 onShowSuggestion={(id) => {
                   select(id, 'row');
                 }}

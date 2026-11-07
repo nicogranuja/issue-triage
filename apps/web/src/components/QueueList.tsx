@@ -8,7 +8,8 @@ export interface QueueListProps {
   items: readonly QueueItem[];
   selectedId: number | null;
   onSelect: (id: number) => void;
-  onOpen: (id: number) => void;
+  /** Opens the selected suggestion: a click, or Enter on the focused row. */
+  onOpen: () => void;
   /** Called with each row's button, so the parent can move focus with the selection. */
   registerItem: (id: number, element: HTMLButtonElement | null) => void;
   hasMore: boolean;
@@ -57,7 +58,7 @@ export function QueueList({
                 tabIndex={item.suggestionId === tabStop ? 0 : -1}
                 onClick={() => {
                   onSelect(item.suggestionId);
-                  onOpen(item.suggestionId);
+                  onOpen();
                 }}
                 onFocus={() => {
                   if (!selected) {
