@@ -17,7 +17,12 @@ import { submitReview } from '../../src/review/service.js';
 import { FakeTriageModel } from '../../src/triage/fake-model.js';
 import { RepositoryLabelCache } from '../../src/triage/labels.js';
 import { TriageWorker } from '../../src/triage/worker.js';
-import { mergeAttempt, planWriteBack } from '../../src/triage/write-back.js';
+import {
+  changesCountFrom,
+  mergeAttempt,
+  planWriteBack,
+  respectChangesSince,
+} from '../../src/triage/write-back.js';
 import { createMigratedTestDatabase } from '../helpers/database.js';
 import { FakeGitHub } from '../helpers/fake-github.js';
 import { seedIssue, seedRepository, seedSuggestion } from '../helpers/seed.js';
@@ -60,12 +65,58 @@ describe('planWriteBack', () => {
   });
 });
 
+describe('respectChangesSince', () => {
+  const reviewedAt = new Date('2026-11-07T10:00:00Z');
+  const at = (offsetSeconds: number) => new Date(reviewedAt.getTime() + offsetSeconds * 1000);
+
+  it('keeps off a label taken off after the review, and on one put back after it', () => {
+    expect(
+      respectChangesSince(
+        { add: ['bug', 'area: export'], remove: ['needs triage', 'stale'] },
+        [
+          { event: 'labeled', label: 'bug', createdAt: at(30) },
+          { event: 'unlabeled', label: 'Bug', createdAt: at(90) },
+          { event: 'unlabeled', label: 'needs triage', createdAt: at(100) },
+          { event: 'labeled', label: 'needs triage', createdAt: at(120) },
+        ],
+        changesCountFrom(reviewedAt),
+      ),
+    ).toEqual({ add: ['area: export'], remove: ['stale'], kept: ['bug', 'needs triage'] });
+  });
+
+  it('ignores changes made before the review', () => {
+    expect(
+      respectChangesSince(
+        { add: ['bug'], remove: ['needs triage'] },
+        [
+          { event: 'unlabeled', label: 'bug', createdAt: at(-3600) },
+          { event: 'labeled', label: 'needs triage', createdAt: at(-60) },
+        ],
+        changesCountFrom(reviewedAt),
+      ),
+    ).toEqual({ add: ['bug'], remove: ['needs triage'], kept: [] });
+  });
+
+  it('gives a change within the clock-skew allowance to the person who made it', () => {
+    const since = changesCountFrom(new Date('2026-11-07T10:00:00.700Z'));
+    expect(since).toEqual(new Date('2026-11-07T09:59:55Z'));
+    expect(
+      respectChangesSince(
+        { add: ['bug'], remove: [] },
+        [{ event: 'unlabeled', label: 'bug', createdAt: new Date('2026-11-07T09:59:57Z') }],
+        since,
+      ).kept,
+    ).toEqual(['bug']);
+  });
+});
+
 describe('mergeAttempt', () => {
   const run = (attempt: number, changes: Partial<WriteBackAttempt> = {}): WriteBackAttempt => ({
     attempt,
     added: [],
     removed: [],
     skipped: [],
+    kept: [],
     ...changes,
   });
 
@@ -75,6 +126,7 @@ describe('mergeAttempt', () => {
       added: ['bug'],
       removed: ['needs triage'],
       skipped: [],
+      kept: [],
       dryRun: false,
       attempts: [run(1, { added: ['bug'] }), run(2, { removed: ['needs triage'] })],
     });
@@ -174,6 +226,8 @@ describe('write-back jobs', () => {
     expect(github.writes).toEqual([
       { method: 'POST', path: `${ISSUE_PATH}/labels`, body: { labels: ['bug', 'area: export'] } },
     ]);
+    // The issue hasn't changed since the review, so its label history isn't read.
+    expect(github.calls.map((call) => call.path)).not.toContain(`${ISSUE_PATH}/events`);
     expect(await writeBackJob()).toMatchObject({
       status: 'succeeded',
       attempts: 1,
@@ -221,8 +275,9 @@ describe('write-back jobs', () => {
       added: ['bug'],
       removed: ['needs triage'],
       skipped: [],
+      kept: [],
       dryRun: false,
-      attempts: [{ attempt: 1, added: ['bug'], removed: ['needs triage'], skipped: [] }],
+      attempts: [{ attempt: 1, added: ['bug'], removed: ['needs triage'], skipped: [], kept: [] }],
     });
   });
 
@@ -283,6 +338,83 @@ describe('write-back jobs', () => {
           { attempt: 2, added: [], removed: [] },
         ],
       },
+    });
+  });
+
+  it('does not re-add, on a late retry, a label a maintainer took off after the review', async () => {
+    const { github } = await reviewed({
+      decision: 'edit',
+      labels: ['bug'],
+      baseLabels: ['needs triage'],
+    });
+    github.failNext('DELETE', /labels\/needs%20triage$/, {
+      status: 503,
+      body: { message: 'Service Unavailable' },
+    });
+    const worker = workerFor(github);
+    await worker.runNext();
+    expect(github.issueLabels.get(ISSUE)).toEqual(['needs triage', 'bug']);
+
+    // While the job waits to retry, a maintainer decides `bug` was wrong and takes it off.
+    github.changeByHand(ISSUE, 'unlabeled', 'bug');
+    await db().execute(sql`update triage_jobs set run_after = now() where kind = 'write_back'`);
+    await worker.runNext();
+
+    expect(github.issueLabels.get(ISSUE)).toEqual([]);
+    expect(github.writes.filter((call) => call.method === 'POST')).toHaveLength(1);
+    expect(await writeBackJob()).toMatchObject({
+      status: 'succeeded',
+      result: {
+        added: ['bug'],
+        removed: ['needs triage'],
+        kept: ['bug'],
+        attempts: [
+          { attempt: 1, added: ['bug'], removed: [], kept: [] },
+          { attempt: 2, added: [], removed: ['needs triage'], kept: ['bug'] },
+        ],
+      },
+    });
+  });
+
+  it('does not remove a label a maintainer put back after the review', async () => {
+    const { github } = await reviewed({
+      decision: 'edit',
+      labels: ['bug'],
+      baseLabels: ['needs triage'],
+    });
+    github.changeByHand(ISSUE, 'unlabeled', 'needs triage');
+    github.changeByHand(ISSUE, 'labeled', 'needs triage');
+
+    await workerFor(github).runNext();
+
+    expect(github.issueLabels.get(ISSUE)).toEqual(['needs triage', 'bug']);
+    expect(await writeBackJob()).toMatchObject({
+      status: 'succeeded',
+      result: { added: ['bug'], removed: [], kept: ['needs triage'] },
+    });
+  });
+
+  it('applies the review over label changes made before it', async () => {
+    const { github } = await reviewed({ decision: 'accept' });
+    // `bug` was taken off an hour before the review; the issue changed again since (a label
+    // the review doesn't touch), so the job reads the events and must not misread the old one.
+    github.changeByHand(ISSUE, 'unlabeled', 'bug', new Date(Date.now() - 3_600_000));
+    github.changeByHand(ISSUE, 'labeled', 'regression');
+
+    await workerFor(github).runNext();
+
+    expect(github.calls.map((call) => `${call.method} ${call.path}`)).toContain(
+      `GET ${ISSUE_PATH}/events`,
+    );
+    expect(github.issueLabels.get(ISSUE)).toEqual([
+      'needs triage',
+      'regression',
+      'bug',
+      'area: export',
+    ]);
+    expect((await writeBackJob()).result).toMatchObject({
+      added: ['bug', 'area: export'],
+      kept: [],
     });
   });
 

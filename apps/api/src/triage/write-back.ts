@@ -9,12 +9,15 @@ import { eq } from 'drizzle-orm';
 import type { WriteBackMode } from '../config.js';
 import type { Database } from '../db/client.js';
 import { issues, repositories, reviews, triageJobs } from '../db/schema.js';
-import type { GitHubClient } from '../github/client.js';
+import type { GitHubClient, LabelEvent } from '../github/client.js';
 import type { LabelSource } from './labels.js';
 import { cancelJob, completeJob, saveProgress, type ClaimedJob } from './queue.js';
 
 /** The GitHub calls a write-back makes. */
-export type IssueLabelWriter = Pick<GitHubClient, 'getIssue' | 'addLabels' | 'removeLabel'>;
+export type IssueLabelWriter = Pick<
+  GitHubClient,
+  'getIssue' | 'listLabelEvents' | 'addLabels' | 'removeLabel'
+>;
 
 export interface WriteBackDependencies {
   db: Database;
@@ -88,6 +91,57 @@ export function planWriteBack({
 }
 
 /**
+ * How far before the review a label change on GitHub still counts as made after it. GitHub's
+ * timestamps are whole seconds from GitHub's clock, the review's are from the database's, so the
+ * two can disagree by a little; within this margin the person who changed the label on GitHub
+ * wins.
+ */
+export const CLOCK_SKEW_ALLOWANCE_MS = 5_000;
+
+/**
+ * Drops from the plan the labels someone changed on GitHub after the review, so a late run (a
+ * retry after an outage, or after a rate limit) never undoes a maintainer's hand edit:
+ *
+ * - a label the review adds, that was taken off the issue since, stays off: it was there at some
+ *   point after the review (an earlier run of this job added it, or someone else did), and then
+ *   someone removed it on purpose;
+ * - a label the review removes, that was put on again since, stays on.
+ *
+ * This job never takes off a label it adds or puts back one it removes, so these events are always
+ * someone else's (a person, another app, or the write-back of a later review, whose decision is
+ * newer anyway). Labels the plan doesn't touch, and changes from before the review, are not
+ * considered: the review already accounted for those.
+ */
+export function respectChangesSince(
+  plan: Pick<WriteBackPlan, 'add' | 'remove'>,
+  events: readonly LabelEvent[],
+  since: Date,
+): { add: string[]; remove: string[]; kept: string[] } {
+  const takenOff = new Set<string>();
+  const putOn = new Set<string>();
+  for (const { event, label, createdAt } of events) {
+    if (createdAt.getTime() >= since.getTime()) {
+      (event === 'unlabeled' ? takenOff : putOn).add(labelKey(label));
+    }
+  }
+  const changed = (name: string, keys: Set<string>) => keys.has(labelKey(name));
+  return {
+    add: plan.add.filter((name) => !changed(name, takenOff)),
+    remove: plan.remove.filter((name) => !changed(name, putOn)),
+    kept: [
+      ...plan.add.filter((name) => changed(name, takenOff)),
+      ...plan.remove.filter((name) => changed(name, putOn)),
+    ],
+  };
+}
+
+/** The earliest time a change on GitHub counts as made after a review (see the allowance). */
+export function changesCountFrom(reviewedAt: Date): Date {
+  const earliest = reviewedAt.getTime() - CLOCK_SKEW_ALLOWANCE_MS;
+  return new Date(Math.floor(earliest / 1000) * 1000);
+}
+
+/**
  * Folds one run into the job's record. A run that saves progress more than once replaces its own
  * earlier entry. Totals are the union over runs; a label counts as skipped only if no run added it
  * (it can be recreated in the repository between runs).
@@ -109,6 +163,7 @@ export function mergeAttempt(
     skipped: uniqueLabels(attempts.flatMap((entry) => entry.skipped)).filter(
       (name) => !addedKeys.has(labelKey(name)),
     ),
+    kept: uniqueLabels(attempts.flatMap((entry) => entry.kept)),
     dryRun,
     attempts,
   };
@@ -122,6 +177,10 @@ export function mergeAttempt(
  * removing an absent one change nothing), so a job that crashed half-way, or whose result failed
  * to save, can simply run again. Before each run it re-reads the repository's labels and the
  * issue's labels from GitHub, so it acts on the state of now, not of when the review was made.
+ *
+ * Labels someone changed on GitHub after the review are left as they are (see
+ * {@link respectChangesSince}). The issue's `updated_at` says whether anything changed at all; only
+ * then does the job read the issue's label events, which say exactly which labels changed and when.
  *
  * After each change it makes, it saves what it did so far on the job, so a run that fails part-way
  * (a rate limit between adding and removing, say) still leaves a true record: the retry finds that
@@ -146,6 +205,7 @@ export async function runWriteBackJob(
 
   const [row] = await db
     .select({
+      reviewedAt: reviews.createdAt,
       labelsAdded: reviews.labelsAdded,
       labelsRemoved: reviews.labelsRemoved,
       issueNumber: issues.number,
@@ -170,8 +230,10 @@ export async function runWriteBackJob(
   }
 
   const dryRun = mode === 'dry-run';
+  const target = { owner: row.owner, repo: row.name, number: row.issueNumber };
   let current: readonly string[];
   let repositoryLabels: readonly string[];
+  let updatedAt: Date | null = null;
   if (dryRun) {
     current = row.issueLabels;
     repositoryLabels = row.cachedLabels?.map((label) => label.name) ?? [];
@@ -180,20 +242,38 @@ export async function runWriteBackJob(
     repositoryLabels = (await labels.labelsFor(repository, { signal, fresh: true })).map(
       (label) => label.name,
     );
-    current = (await github.getIssue(row.owner, row.name, row.issueNumber, { signal })).labels;
+    const issue = await github.getIssue(target.owner, target.repo, target.number, { signal });
+    current = issue.labels;
+    updatedAt = issue.updatedAt;
   }
 
-  const plan = planWriteBack({
+  let plan = planWriteBack({
     labelsAdded: row.labelsAdded,
     labelsRemoved: row.labelsRemoved,
     current,
     repositoryLabels,
   });
+  let kept: string[] = [];
+  const since = changesCountFrom(row.reviewedAt);
+  if (
+    updatedAt !== null &&
+    updatedAt.getTime() >= since.getTime() &&
+    (plan.add.length > 0 || plan.remove.length > 0)
+  ) {
+    const events = await github.listLabelEvents(target.owner, target.repo, target.number, {
+      signal,
+    });
+    const respected = respectChangesSince(plan, events, since);
+    plan = { ...plan, add: respected.add, remove: respected.remove };
+    kept = respected.kept;
+  }
+
   const attempt: WriteBackAttempt = {
     attempt: job.attempts,
     added: [],
     removed: [],
     skipped: plan.skipped,
+    kept,
   };
   const record = () => mergeAttempt(row.previous, attempt, dryRun);
   const lost: WriteBackOutcome = { status: 'lease_lost' };

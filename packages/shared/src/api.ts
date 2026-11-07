@@ -127,12 +127,14 @@ export const writeBackAttemptSchema = z.object({
   added: z.array(z.string()),
   removed: z.array(z.string()),
   skipped: z.array(z.string()),
+  kept: z.array(z.string()),
 });
 
 export const writeBackResultSchema = z.object({
   added: z.array(z.string()),
   removed: z.array(z.string()),
   skipped: z.array(z.string()),
+  kept: z.array(z.string()).optional(),
   dryRun: z.boolean(),
   attempts: z.array(writeBackAttemptSchema).optional(),
 });

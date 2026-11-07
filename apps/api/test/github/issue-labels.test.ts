@@ -49,7 +49,13 @@ const ISSUE_URL = 'https://api.github.com/repos/lumen-labs/lumen/issues/42';
 describe('GitHubClient issue labels', () => {
   it('reads an issue and its label names', async () => {
     const { fetch, requests } = fakeFetch(() =>
-      json({ number: 42, state: 'open', labels: [{ name: 'bug', color: 'd73a4a' }], title: 'x' }),
+      json({
+        number: 42,
+        state: 'open',
+        labels: [{ name: 'bug', color: 'd73a4a' }],
+        title: 'x',
+        updated_at: '2026-11-07T10:00:00Z',
+      }),
     );
     const client = new GitHubClient({ token: 'ghp_test', fetch });
 
@@ -57,9 +63,39 @@ describe('GitHubClient issue labels', () => {
       number: 42,
       state: 'open',
       labels: ['bug'],
+      updatedAt: new Date('2026-11-07T10:00:00Z'),
     });
     expect(requests).toEqual([
       { method: 'GET', url: ISSUE_URL, body: undefined, authorization: 'Bearer ghp_test' },
+    ]);
+  });
+
+  it('lists label events across pages, ignoring other kinds of event', async () => {
+    const page2 = `${ISSUE_URL}/events?per_page=100&page=2`;
+    const { fetch, requests } = fakeFetch((request) =>
+      request.url.endsWith('page=2')
+        ? json([{ event: 'unlabeled', created_at: '2026-11-07T10:05:00Z', label: { name: 'bug' } }])
+        : new Response(
+            JSON.stringify([
+              { event: 'labeled', created_at: '2026-11-07T10:00:00Z', label: { name: 'bug' } },
+              { event: 'commented', created_at: '2026-11-07T10:01:00Z' },
+              { event: 'assigned', created_at: '2026-11-07T10:02:00Z', assignee: {} },
+            ]),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json', link: `<${page2}>; rel="next"` },
+            },
+          ),
+    );
+    const client = new GitHubClient({ token: 'ghp_test', fetch });
+
+    expect(await client.listLabelEvents('lumen-labs', 'lumen', 42)).toEqual([
+      { event: 'labeled', label: 'bug', createdAt: new Date('2026-11-07T10:00:00Z') },
+      { event: 'unlabeled', label: 'bug', createdAt: new Date('2026-11-07T10:05:00Z') },
+    ]);
+    expect(requests.map((request) => request.url)).toEqual([
+      `${ISSUE_URL}/events?per_page=100`,
+      page2,
     ]);
   });
 

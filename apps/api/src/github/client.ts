@@ -44,6 +44,15 @@ export interface GitHubIssue {
   number: number;
   state: 'open' | 'closed';
   labels: string[];
+  /** When anything about the issue last changed, by GitHub's clock. */
+  updatedAt: Date;
+}
+
+/** A label put on or taken off an issue, from the issue's event history. */
+export interface LabelEvent {
+  event: 'labeled' | 'unlabeled';
+  label: string;
+  createdAt: Date;
 }
 
 export interface GitHubClientOptions {
@@ -77,7 +86,17 @@ const issueSchema = z.object({
   number: z.number().int(),
   state: z.enum(['open', 'closed']),
   labels: z.array(z.object({ name: z.string() })),
+  updated_at: z.iso.datetime({ offset: true }),
 });
+
+/** Issue events. Only label events are kept; the other kinds have other shapes. */
+const issueEventsSchema = z.array(
+  z.looseObject({
+    event: z.string(),
+    created_at: z.iso.datetime({ offset: true }),
+    label: z.object({ name: z.string() }).nullish(),
+  }),
+);
 
 /** GitHub's error body: a message, sometimes with field errors (422). */
 const errorBodySchema = z.object({
@@ -210,8 +229,59 @@ export class GitHubClient {
         false,
       );
     }
-    const { number, state, labels } = parsed.data;
-    return { number, state, labels: labels.map((label) => label.name) };
+    const { number, state, labels, updated_at: updatedAt } = parsed.data;
+    return {
+      number,
+      state,
+      labels: labels.map((label) => label.name),
+      updatedAt: new Date(updatedAt),
+    };
+  }
+
+  /**
+   * Lists the labels put on and taken off an issue, oldest first, following pagination. GitHub
+   * keeps these in the issue's event history whoever made the change (a person, an app, or this
+   * app's own write-back).
+   */
+  async listLabelEvents(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<LabelEvent[]> {
+    let url: URL | null = this.#issueUrl(owner, repo, issueNumber, '/events');
+    url.searchParams.set('per_page', '100');
+
+    const events: LabelEvent[] = [];
+    for (let page = 1; url; page += 1) {
+      if (page > this.#maxPages) {
+        throw new GitHubApiError(
+          `Issue ${issueNumber} in ${owner}/${repo} has more than ${this.#maxPages * 100} events`,
+          null,
+          false,
+        );
+      }
+      const response = await this.#request('GET', url, options.signal);
+      const parsed = issueEventsSchema.safeParse(await this.#json(response, 'GET', url));
+      if (!parsed.success) {
+        throw new GitHubApiError(
+          `Unexpected response from GET ${url.pathname}: ${z.prettifyError(parsed.error)}`,
+          response.status,
+          false,
+        );
+      }
+      for (const entry of parsed.data) {
+        if ((entry.event === 'labeled' || entry.event === 'unlabeled') && entry.label) {
+          events.push({
+            event: entry.event,
+            label: entry.label.name,
+            createdAt: new Date(entry.created_at),
+          });
+        }
+      }
+      url = this.#sameOrigin(nextLink(response.headers.get('link')));
+    }
+    return events;
   }
 
   /**

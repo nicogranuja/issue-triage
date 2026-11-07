@@ -50,10 +50,14 @@ function writeBackStatus(review: Review): { text: string; tone: 'muted' | 'ok' |
         result.skipped.length > 0
           ? ` Skipped (no longer in the repository): ${list(result.skipped)}.`
           : '';
+      const kept =
+        result.kept && result.kept.length > 0
+          ? ` Left as changed on GitHub after the review: ${list(result.kept)}.`
+          : '';
       return {
         text: result.dryRun
           ? `Dry run, nothing written: would have ${done}.${skipped}`
-          : `Written: ${done}.${skipped}`,
+          : `Written: ${done}.${skipped}${kept}`,
         tone: 'ok',
       };
     }

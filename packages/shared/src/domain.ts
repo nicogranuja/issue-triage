@@ -68,6 +68,11 @@ export interface WriteBackAttempt {
   removed: string[];
   /** Labels this run did not apply because the repository no longer has them. */
   skipped: string[];
+  /**
+   * Labels this run left alone because someone changed them on GitHub after the review: a label
+   * the review adds that was taken off since, or one it removes that was put back since.
+   */
+  kept: string[];
 }
 
 /**
@@ -82,6 +87,8 @@ export interface WriteBackResult {
   removed: string[];
   /** Labels the review asked for that no longer exist in the repository, so were not applied. */
   skipped: string[];
+  /** Labels left as someone changed them on GitHub after the review. Absent on old rows. */
+  kept?: string[];
   /** True when the job only planned the change (`WRITE_BACK_MODE=dry-run`) and wrote nothing. */
   dryRun: boolean;
   /** Each run that got as far as working out the change, oldest first. Absent on old rows. */
