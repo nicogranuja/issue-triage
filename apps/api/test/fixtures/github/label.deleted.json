@@ -1,0 +1,32 @@
+{
+  "action": "deleted",
+  "label": {
+    "id": 6612009871,
+    "node_id": "LA_kwDOKmB3cc8AAAABipYdTw",
+    "url": "https://api.github.com/repos/lumen-labs/lumen/labels/area:%20export",
+    "name": "area: export",
+    "color": "c5def5",
+    "default": false,
+    "description": "PDF and PNG export"
+  },
+  "repository": {
+    "id": 708812345,
+    "node_id": "R_kgDOKmB3cQ",
+    "name": "lumen",
+    "full_name": "lumen-labs/lumen",
+    "private": false,
+    "owner": {
+      "login": "lumen-labs",
+      "id": 98123456,
+      "type": "Organization",
+      "html_url": "https://github.com/lumen-labs"
+    },
+    "html_url": "https://github.com/lumen-labs/lumen"
+  },
+  "sender": {
+    "login": "grace-maint",
+    "id": 7710932,
+    "type": "User",
+    "html_url": "https://github.com/grace-maint"
+  }
+}

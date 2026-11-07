@@ -85,3 +85,19 @@ export function readAction(payload: unknown): string | null {
   }
   return null;
 }
+
+/**
+ * `label` actions that change a repository's label set. Each one makes the cached set stale, so the
+ * next triage job fetches it again instead of waiting out the cache's lifetime.
+ */
+export const LABEL_ACTIONS = ['created', 'edited', 'deleted'] as const;
+
+export const labelEventSchema = z.object({
+  action: z.enum(LABEL_ACTIONS),
+  repository: repositorySchema.pick({ id: true, full_name: true }),
+});
+export type LabelEvent = z.infer<typeof labelEventSchema>;
+
+export function isLabelAction(action: string | null): action is (typeof LABEL_ACTIONS)[number] {
+  return (LABEL_ACTIONS as readonly (string | null)[]).includes(action);
+}

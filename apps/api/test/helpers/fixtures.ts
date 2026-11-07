@@ -12,7 +12,7 @@ type IssuesFixtureName =
   | 'issues.closed'
   | 'issues.deleted'
   | 'issues.transferred';
-type FixtureName = IssuesFixtureName | 'issue_comment.created' | 'ping';
+type FixtureName = IssuesFixtureName | 'issue_comment.created' | 'label.deleted' | 'ping';
 
 /** The parts of an `issues` payload that tests modify. */
 export interface IssuesPayload {

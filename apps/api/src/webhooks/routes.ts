@@ -4,7 +4,14 @@ import { z } from 'zod';
 import type { Database, Transaction } from '../db/client.js';
 import { claimDelivery } from './deliveries.js';
 import { applyIssuesEvent } from './issues.js';
-import { isHandledIssueAction, issuesEventSchema, readAction } from './payloads.js';
+import { applyLabelEvent } from './labels.js';
+import {
+  isHandledIssueAction,
+  isLabelAction,
+  issuesEventSchema,
+  labelEventSchema,
+  readAction,
+} from './payloads.js';
 import { SIGNATURE_HEADER, verifySignature } from './signature.js';
 
 export interface GithubWebhookOptions {
@@ -49,13 +56,27 @@ function planDelivery(event: string, action: string | null, payload: unknown): D
       }),
     };
   }
-  // Everything else (ping, other events, other issue actions) is acknowledged and recorded.
+  if (event === 'label' && isLabelAction(action)) {
+    const parsed = labelEventSchema.safeParse(payload);
+    if (!parsed.success) {
+      return { kind: 'reject', error: parsed.error };
+    }
+    return {
+      kind: 'process',
+      apply: async (tx) => ({
+        repository: parsed.data.repository.full_name,
+        ...(await applyLabelEvent(tx, parsed.data)),
+      }),
+    };
+  }
+  // Everything else (ping, other events, other actions) is acknowledged and recorded.
   return { kind: 'ignore' };
 }
 
 /**
  * `POST /webhooks/github`: verifies the signature, deduplicates by delivery id, mirrors issue
- * events into the database, and queues issues for triage.
+ * events into the database, queues issues for triage, and refreshes a repository's labels when
+ * they change.
  */
 export const githubWebhookRoutes: FastifyPluginAsync<GithubWebhookOptions> = async (
   app,

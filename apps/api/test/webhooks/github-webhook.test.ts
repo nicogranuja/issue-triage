@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { DatabaseHandle } from '../../src/db/client.js';
 import {
@@ -10,6 +10,8 @@ import {
   triageSuggestions,
   webhookDeliveries,
 } from '../../src/db/schema.js';
+import type { GitHubClient } from '../../src/github/client.js';
+import { RepositoryLabelCache } from '../../src/triage/labels.js';
 import { claimJob, completeJob } from '../../src/triage/queue.js';
 import { applyIssuesEvent } from '../../src/webhooks/issues.js';
 import { issuesEventSchema } from '../../src/webhooks/payloads.js';
@@ -423,6 +425,77 @@ describe('POST /webhooks/github', () => {
         action: 'closed',
         outcome: 'processed',
       });
+    });
+  });
+
+  describe('label events', () => {
+    const REPOSITORY_GITHUB_ID = 708812345;
+    const cachedRepository = async () => {
+      await database.db.insert(repositories).values({
+        githubId: REPOSITORY_GITHUB_ID,
+        owner: 'lumen-labs',
+        name: 'lumen',
+        fullName: 'lumen-labs/lumen',
+        private: false,
+        labels: [{ name: 'area: export', description: null, color: 'c5def5' }],
+        labelsFetchedAt: new Date(),
+      });
+    };
+    const fetchedAt = async () => {
+      const [row] = await database.db
+        .select({ labelsFetchedAt: repositories.labelsFetchedAt })
+        .from(repositories);
+      return row?.labelsFetchedAt;
+    };
+
+    it.each(['created', 'edited', 'deleted'])(
+      'marks the cached label set stale when a label is %s',
+      async (action) => {
+        await cachedRepository();
+        const event = payload('label.deleted');
+        event.action = action;
+
+        const response = await deliver(app, { event: 'label', payload: event });
+
+        expect(response.json()).toEqual({ status: 'processed' });
+        expect(await fetchedAt()).toBeNull();
+        const [delivery] = await database.db.select().from(webhookDeliveries);
+        expect(delivery).toMatchObject({ event: 'label', action, outcome: 'processed' });
+      },
+    );
+
+    it('makes the next triage job fetch the labels again', async () => {
+      await cachedRepository();
+      const [repository] = await database.db.select().from(repositories);
+      const listLabels = vi.fn<GitHubClient['listLabels']>(() => Promise.resolve([]));
+      const cache = new RepositoryLabelCache(database.db, { listLabels });
+      if (!repository) {
+        throw new Error('No repository');
+      }
+
+      await cache.labelsFor(repository);
+      expect(listLabels).not.toHaveBeenCalled();
+
+      await deliver(app, { event: 'label', payload: payload('label.deleted') });
+      expect(await cache.labelsFor(repository)).toEqual([]);
+      expect(listLabels).toHaveBeenCalledOnce();
+    });
+
+    it('processes a label event for a repository it has never seen, storing nothing', async () => {
+      const response = await deliver(app, { event: 'label', payload: payload('label.deleted') });
+
+      expect(response.json()).toEqual({ status: 'processed' });
+      expect(await database.db.select().from(repositories)).toEqual([]);
+    });
+
+    it('refuses a label payload without its repository', async () => {
+      const event = payload('label.deleted');
+      delete event.repository;
+
+      const response = await deliver(app, { event: 'label', payload: event });
+
+      expect(response.statusCode).toBe(400);
+      expect(await deliveryCount()).toBe(0);
     });
   });
 
