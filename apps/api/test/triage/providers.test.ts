@@ -1,9 +1,11 @@
+import Anthropic from '@anthropic-ai/sdk';
+import { AnthropicBedrockMantle } from '@anthropic-ai/bedrock-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadProcessConfig } from '../../src/config.js';
 import { FakeTriageModel } from '../../src/triage/fake-model.js';
 import { MessagesTriageModel } from '../../src/triage/messages-model.js';
-import { createTriageModel } from '../../src/triage/providers.js';
+import { createTriageModel, SDK_OPEN_TELEMETRY } from '../../src/triage/providers.js';
 import { sampleInput, sampleSuggestion } from '../helpers/triage.js';
 
 interface Captured {
@@ -132,5 +134,30 @@ describe('createTriageModel', () => {
       model: 'claude-sonnet-5-5',
       output_config: { effort: 'low' },
     });
+  });
+});
+
+describe('SDK tracing', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('keeps prompts and completions out of spans whatever the environment says', () => {
+    vi.stubEnv('ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE', 'content');
+    // The environment variable works on an unpinned client, so the pin is what overrides it.
+    const unpinned = new Anthropic({ apiKey: 'sk-ant-test-key' });
+    expect(unpinned.openTelemetry.traces.contentMode).toBe('content');
+
+    const anthropic = new Anthropic({
+      apiKey: 'sk-ant-test-key',
+      openTelemetry: SDK_OPEN_TELEMETRY,
+    });
+    const bedrock = new AnthropicBedrockMantle({
+      awsRegion: 'us-east-1',
+      apiKey: 'bedrock-test-key',
+      openTelemetry: SDK_OPEN_TELEMETRY,
+    });
+    expect(anthropic.openTelemetry.traces.contentMode).toBe('metadata_only');
+    expect(bedrock.openTelemetry.traces.contentMode).toBe('metadata_only');
   });
 });

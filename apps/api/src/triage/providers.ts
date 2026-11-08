@@ -21,6 +21,14 @@ const ANTHROPIC_REQUEST_EXTRAS: Partial<Anthropic.Beta.MessageCreateParamsNonStr
 const SDK_MAX_RETRIES = 2;
 
 /**
+ * The SDK emits a span per API call once a tracer provider is registered. Its spans carry only
+ * metadata by default, but without this option `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE`
+ * could switch them to carrying prompts and completions, which here are issue text and model
+ * output. Pinned, the client ignores those environment variables.
+ */
+export const SDK_OPEN_TELEMETRY = { traces: { contentMode: 'metadata_only' } } as const;
+
+/**
  * Builds the triage model selected by `TRIAGE_PROVIDER`. Credentials are not passed in: the
  * Anthropic client reads `ANTHROPIC_API_KEY` from the environment, and the Bedrock client uses
  * the AWS credential chain (environment, profile, or instance role), when the first request
@@ -40,6 +48,7 @@ export async function createTriageModel(
       const client = new Anthropic({
         timeout: config.modelTimeoutMs,
         maxRetries: SDK_MAX_RETRIES,
+        openTelemetry: SDK_OPEN_TELEMETRY,
         ...transport,
       });
       return new MessagesTriageModel({
@@ -59,6 +68,7 @@ export async function createTriageModel(
         awsRegion: config.awsRegion,
         timeout: config.modelTimeoutMs,
         maxRetries: SDK_MAX_RETRIES,
+        openTelemetry: SDK_OPEN_TELEMETRY,
         ...transport,
       });
       return new MessagesTriageModel({
