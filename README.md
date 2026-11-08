@@ -146,6 +146,9 @@ text chosen by whoever opened the issue, so they are rendered as plain text only
 or markdown (lint forbids `dangerouslySetInnerHTML` and friends in the app). Links are rendered
 only for `http(s)` URLs, and label colors are used only when they are hex.
 
+**Logs.** Logs never contain issue text, model output, or secrets: errors are logged by
+allowlist ([`logging.ts`](apps/api/src/logging.ts)), and tests check for canary strings.
+
 | Endpoint                             | What it does                                                               |
 | ------------------------------------ | -------------------------------------------------------------------------- |
 | `GET /api/queue`                     | `?repo=&priority=&confidence=&cursor=&limit=`, keyset-paged                |
