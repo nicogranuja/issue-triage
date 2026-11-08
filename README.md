@@ -181,13 +181,18 @@ A write-back job turns a review into label changes on the issue:
   removal) saves what it did after each change, so the retry's own entry and the totals together
   say exactly which run changed what, shown in the Reviewed tab.
 - **A late retry never undoes a maintainer.** If someone changed one of the review's labels on
-  GitHub after the review (took off a label the review adds, or put back one it removes), the
-  job leaves it as they set it and records it as kept. It compares the issue's `updated_at` with
-  the review time, and only when the issue changed since does it read the issue's label events,
-  which say which labels changed and when. This job never takes off a label it adds or puts back
-  one it removes, so those events are always someone else's. GitHub's timestamps are whole
-  seconds from another clock, so a change up to 5 seconds before the review also counts as after
-  it: within that margin the person who changed the label on GitHub wins. And when the issue was
+  GitHub after the review saw the issue (took off a label the review adds, or put back one it
+  removes), the job leaves it as they set it and records it as kept. "After" counts from the
+  earlier of the issue version the review was worked out against (its GitHub `updated_at`, stored
+  on the review) and the review itself, so a change made just before the review, whose webhook
+  hadn't arrived yet, is safe too; reviews stored before that snapshot existed fall back to the
+  review time. When the issue's `updated_at` says it may have changed since, the job reads the
+  issue's label events newest first, jumping to GitHub's last page and walking back only to the
+  cut-off, so issues with more than 1,000 events are checked in a page or two. This job never
+  takes off a label it adds or puts back one it removes, so those events are always someone
+  else's. The review time is on the database's clock, not GitHub's, so a change up to 5 seconds
+  before it also counts as after it: within that margin the person who changed the label on
+  GitHub wins. And when the issue was
   triaged and reviewed again, an older review's write-back that hasn't run yet is cancelled: the
   newer review is the newer decision.
 - **Retries.** Rate limits, 5xx, and timeouts retry with the queue's exponential backoff
