@@ -3,15 +3,14 @@
  * from the API. Needs a shared Postgres (`DATABASE_URL`): PGlite lives inside a single process,
  * so with PGlite the worker runs inside the API server instead.
  */
-import { pino } from 'pino';
-
+import { createLogger } from './logging.js';
 import { ConfigError, loadProcessConfig } from './config.js';
 import { connectDatabase } from './db/client.js';
 import { startTriageWorker } from './triage/start.js';
 
 async function main(): Promise<void> {
   const config = loadProcessConfig();
-  const logger = pino({ level: config.logLevel });
+  const logger = createLogger({ level: config.logLevel });
   if (config.database.driver !== 'postgres') {
     throw new ConfigError(
       'The standalone worker needs DATABASE_URL. With PGlite, the API server runs the worker itself.',

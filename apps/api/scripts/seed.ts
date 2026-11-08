@@ -5,13 +5,12 @@
  * With PGlite, stop the API first: the embedded database must only be open in one process.
  * (`npm run dev` seeds an empty PGlite database by itself.)
  */
-import { pino } from 'pino';
-
+import { createLogger } from '../src/logging.js';
 import { ConfigError, loadDatabaseConfig } from '../src/config.js';
 import { connectDatabase } from '../src/db/client.js';
 import { DEMO_REPOSITORIES, seedDemoData } from '../src/dev/seed.js';
 
-const logger = pino({ name: 'seed' });
+const logger = createLogger({ name: 'seed' });
 
 try {
   if (process.env.NODE_ENV === 'production') {

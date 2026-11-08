@@ -1,5 +1,4 @@
-import { pino } from 'pino';
-
+import { createLogger } from './logging.js';
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
 import { connectDatabase } from './db/client.js';
@@ -8,7 +7,7 @@ import { startTriageWorker } from './triage/start.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const logger = pino({ level: config.logLevel });
+  const logger = createLogger({ level: config.logLevel });
 
   const database = await connectDatabase(config.database, {
     onPoolError: (error) => {

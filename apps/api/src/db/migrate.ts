@@ -2,12 +2,11 @@
  * Applies pending migrations to the configured database (`npm run db:migrate`).
  * Uses `DATABASE_URL` when set, otherwise the local PGlite data directory.
  */
-import { pino } from 'pino';
-
+import { createLogger } from '../logging.js';
 import { ConfigError, loadDatabaseConfig } from '../config.js';
 import { connectDatabase } from './client.js';
 
-const logger = pino({ name: 'migrate' });
+const logger = createLogger({ name: 'migrate' });
 
 try {
   const config = loadDatabaseConfig();
