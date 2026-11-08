@@ -168,18 +168,31 @@ function checkIssueNumber(value: number): number {
   return value;
 }
 
-/** Finds the `rel="next"` URL in a `Link` header. */
-function nextLink(header: string | null): string | null {
+/** Finds the URL with this relation (`next`, `prev`, `last`) in a `Link` header. */
+function linkTo(header: string | null, rel: string): string | null {
   if (!header) {
     return null;
   }
   for (const part of header.split(',')) {
     const match = /<([^>]+)>\s*;\s*rel="([^"]+)"/.exec(part);
-    if (match?.[2]?.split(' ').includes('next')) {
+    if (match?.[2]?.split(' ').includes(rel)) {
       return match[1] ?? null;
     }
   }
   return null;
+}
+
+/** Whether a page link points at page 1 (a URL without a page number is page 1 too). */
+function isFirstPage(link: string | null): boolean {
+  if (link === null) {
+    return true;
+  }
+  const page = new URL(link).searchParams.get('page');
+  return page === null || page === '1';
+}
+
+function nextLink(header: string | null): string | null {
+  return linkTo(header, 'next');
 }
 
 export class GitHubClient {
@@ -264,28 +277,28 @@ export class GitHubClient {
   }
 
   /**
-   * Lists the labels put on and taken off an issue, oldest first, following pagination. GitHub
-   * keeps these in the issue's event history whoever made the change (a person, an app, or this
-   * app's own write-back).
+   * Lists the labels put on and taken off an issue at or after `since` (every one without it),
+   * oldest first. GitHub keeps these in the issue's event history whoever made the change (a
+   * person, an app, or this app's own write-back).
+   *
+   * GitHub lists events oldest first, so a busy issue's recent changes are on its last pages. After
+   * the first page, this jumps to the `rel="last"` page and walks back through `rel="prev"` until a
+   * page reaches back past `since`: an issue with thousands of events costs a page or two, not a
+   * read of its whole history. The page limit counts only pages read; reaching it means more than
+   * that many events since `since`, which fails rather than answering from a partial history.
    */
   async listLabelEvents(
     owner: string,
     repo: string,
     issueNumber: number,
-    options: { signal?: AbortSignal } = {},
+    options: { since?: Date; signal?: AbortSignal } = {},
   ): Promise<LabelEvent[]> {
-    let url: URL | null = this.#issueUrl(owner, repo, issueNumber, '/events');
-    url.searchParams.set('per_page', '100');
+    const since = options.since?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const first = this.#issueUrl(owner, repo, issueNumber, '/events');
+    first.searchParams.set('per_page', '100');
 
     const events: LabelEvent[] = [];
-    for (let page = 1; url; page += 1) {
-      if (page > this.#maxPages) {
-        throw new GitHubApiError(
-          `Issue ${issueNumber} in ${owner}/${repo} has more than ${this.#maxPages * 100} events`,
-          null,
-          false,
-        );
-      }
+    const read = async (url: URL) => {
       const response = await this.#request('GET', url, options.signal);
       const parsed = issueEventsSchema.safeParse(await this.#json(response, 'GET', url));
       if (!parsed.success) {
@@ -297,18 +310,43 @@ export class GitHubClient {
           `: ${z.prettifyError(parsed.error)}`,
         );
       }
+      let oldest = Number.POSITIVE_INFINITY;
       for (const entry of parsed.data) {
-        if ((entry.event === 'labeled' || entry.event === 'unlabeled') && entry.label) {
-          events.push({
-            event: entry.event,
-            label: entry.label.name,
-            createdAt: new Date(entry.created_at),
-          });
+        const createdAt = new Date(entry.created_at);
+        oldest = Math.min(oldest, createdAt.getTime());
+        if (
+          (entry.event === 'labeled' || entry.event === 'unlabeled') &&
+          entry.label &&
+          createdAt.getTime() >= since
+        ) {
+          events.push({ event: entry.event, label: entry.label.name, createdAt });
         }
       }
-      url = this.#sameOrigin(nextLink(response.headers.get('link')));
+      return { link: response.headers.get('link'), oldest };
+    };
+
+    const firstPage = await read(first);
+    // Walk back from the last page; if GitHub ever leaves `last` out, walk forward instead.
+    const last = linkTo(firstPage.link, 'last');
+    const rel = last === null ? 'next' : 'prev';
+    let url = this.#sameOrigin(last ?? nextLink(firstPage.link));
+    for (let page = 2; url; page += 1) {
+      if (page > this.#maxPages) {
+        throw new GitHubApiError(
+          `Issue ${issueNumber} in ${owner}/${repo} has too many events to check: more than ${this.#maxPages} pages`,
+          null,
+          false,
+        );
+      }
+      const { link, oldest } = await read(url);
+      const following = linkTo(link, rel);
+      if (rel === 'prev' && (oldest < since || isFirstPage(following))) {
+        // Earlier pages are older still, and the first page has been read already.
+        break;
+      }
+      url = this.#sameOrigin(following);
     }
-    return events;
+    return events.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 
   /**

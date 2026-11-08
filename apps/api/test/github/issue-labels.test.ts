@@ -99,6 +99,111 @@ describe('GitHubClient issue labels', () => {
     ]);
   });
 
+  describe('more than one page of events', () => {
+    const EVENTS_URL = `${ISSUE_URL}/events?per_page=100`;
+    const base = new Date('2026-11-01T00:00:00Z').getTime();
+    /** `count` events, one a minute, alternately labelling and unlabelling `bug`. */
+    const history = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        event: i % 2 === 0 ? 'labeled' : 'unlabeled',
+        created_at: new Date(base + i * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        label: { name: 'bug' },
+      }));
+
+    /** Serves `events` 100 to a page with GitHub's `Link` header, optionally without `last`. */
+    function paginated(events: unknown[], { withLast = true } = {}) {
+      const pages = Math.ceil(events.length / 100);
+      const at = (page: number) => `${EVENTS_URL}&page=${page}`;
+      return fakeFetch((request) => {
+        const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
+        const links = [
+          ...(page < pages ? [`<${at(page + 1)}>; rel="next"`] : []),
+          ...(withLast && page < pages ? [`<${at(pages)}>; rel="last"`] : []),
+          ...(page > 1 ? [`<${at(page - 1)}>; rel="prev"`, `<${at(1)}>; rel="first"`] : []),
+        ];
+        return new Response(JSON.stringify(events.slice((page - 1) * 100, page * 100)), {
+          status: 200,
+          headers: { 'content-type': 'application/json', link: links.join(', ') },
+        });
+      });
+    }
+    const pagesRead = (requests: RecordedRequest[]) =>
+      requests.map((request) => new URL(request.url).searchParams.get('page') ?? '1');
+    const minute = (i: number) => new Date(base + i * 60_000);
+
+    it('walks back from the last page and stops once past the cut-off, beyond the page limit', async () => {
+      // 2,500 events: 25 pages, more than the 10-page limit.
+      const { fetch, requests } = paginated(history(2_500));
+      const client = new GitHubClient({ token: 'ghp_test', fetch });
+
+      const events = await client.listLabelEvents('lumen-labs', 'lumen', 42, {
+        since: minute(2_350),
+      });
+
+      expect(pagesRead(requests)).toEqual(['1', '25', '24']);
+      expect(events).toHaveLength(150);
+      expect(events[0]).toEqual({ event: 'labeled', label: 'bug', createdAt: minute(2_350) });
+      expect(events.at(-1)?.createdAt).toEqual(minute(2_499));
+    });
+
+    it('reads back to the first page when every later event is after the cut-off', async () => {
+      const { fetch, requests } = paginated(history(250));
+      const client = new GitHubClient({ token: 'ghp_test', fetch });
+
+      const events = await client.listLabelEvents('lumen-labs', 'lumen', 42, {
+        since: minute(0),
+      });
+
+      expect(pagesRead(requests)).toEqual(['1', '3', '2']);
+      expect(events.map((event) => event.createdAt)).toEqual(
+        Array.from({ length: 250 }, (_, i) => minute(i)),
+      );
+    });
+
+    it('fails, rather than answer from part of the history, when the page limit is reached first', async () => {
+      const { fetch, requests } = paginated(history(2_500));
+      const client = new GitHubClient({ token: 'ghp_test', fetch, maxPages: 10 });
+
+      const error = await rejection(
+        client.listLabelEvents('lumen-labs', 'lumen', 42, { since: minute(1_000) }),
+      );
+
+      expect(error.retryable).toBe(false);
+      expect(error.message).toMatch(/too many events to check: more than 10 pages/);
+      expect(requests).toHaveLength(10);
+    });
+
+    it('walks forward if GitHub leaves out the last-page link', async () => {
+      const { fetch, requests } = paginated(history(250), { withLast: false });
+      const client = new GitHubClient({ token: 'ghp_test', fetch });
+
+      const events = await client.listLabelEvents('lumen-labs', 'lumen', 42, {
+        since: minute(240),
+      });
+
+      expect(pagesRead(requests)).toEqual(['1', '2', '3']);
+      expect(events).toHaveLength(10);
+    });
+
+    it('refuses a last-page link to another host', async () => {
+      const { fetch, requests } = fakeFetch(
+        () =>
+          new Response('[]', {
+            status: 200,
+            headers: {
+              'content-type': 'application/json',
+              link: `<${EVENTS_URL}&page=2>; rel="next", <https://evil.example/events?page=9>; rel="last"`,
+            },
+          }),
+      );
+      const client = new GitHubClient({ token: 'ghp_test', fetch });
+
+      const error = await rejection(client.listLabelEvents('lumen-labs', 'lumen', 42));
+      expect(error.message).toMatch(/Refusing to follow a pagination link/);
+      expect(requests).toHaveLength(1);
+    });
+  });
+
   it('adds labels with one POST', async () => {
     const { fetch, requests } = fakeFetch(() => json([{ name: 'bug' }, { name: 'area: export' }]));
     const client = new GitHubClient({ token: 'ghp_test', fetch });
