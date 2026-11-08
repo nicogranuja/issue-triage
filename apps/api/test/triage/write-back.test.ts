@@ -110,6 +110,26 @@ describe('respectChangesSince', () => {
   });
 });
 
+describe('changesCountFrom', () => {
+  const reviewedAt = new Date('2026-11-07T10:00:00.700Z');
+
+  it('counts from the snapshot the review saw when it is earlier, to the second', () => {
+    expect(changesCountFrom(reviewedAt, new Date('2026-11-07T09:50:00.400Z'))).toEqual(
+      new Date('2026-11-07T09:50:00Z'),
+    );
+  });
+
+  it('counts from the review, less the allowance, when that is earlier', () => {
+    expect(changesCountFrom(reviewedAt, new Date('2026-11-07T10:00:00Z'))).toEqual(
+      new Date('2026-11-07T09:59:55Z'),
+    );
+  });
+
+  it('falls back to the review time without a snapshot', () => {
+    expect(changesCountFrom(reviewedAt, null)).toEqual(new Date('2026-11-07T09:59:55Z'));
+  });
+});
+
 describe('mergeAttempt', () => {
   const run = (attempt: number, changes: Partial<WriteBackAttempt> = {}): WriteBackAttempt => ({
     attempt,
@@ -183,14 +203,23 @@ describe('write-back jobs', () => {
    */
   async function reviewed(
     request: ReviewRequest,
-    { suggested = ['bug', 'area: export'], priorityLabels = {} } = {},
+    {
+      suggested = ['bug', 'area: export'],
+      priorityLabels = {},
+      // When this app last heard about the issue from GitHub; the fake GitHub starts here too.
+      snapshot = new Date('2026-11-01T12:00:00Z'),
+    } = {},
   ) {
     const labels = ['bug', 'area: export', 'needs triage', 'regression'];
     const repo = await seedRepository(db(), {
       labels: labels.map((name) => ({ name, description: null, color: 'ededed' })),
       labelsFetchedAt: new Date(),
     });
-    const issue = await seedIssue(db(), repo.id, { number: ISSUE, labels: ['needs triage'] });
+    const issue = await seedIssue(db(), repo.id, {
+      number: ISSUE,
+      labels: ['needs triage'],
+      githubUpdatedAt: snapshot,
+    });
     const suggestion = await seedSuggestion(db(), issue.id, { labels: suggested });
     const review = await submitReview(db(), suggestion.id, request, {
       priorityLabels,
@@ -233,8 +262,9 @@ describe('write-back jobs', () => {
     expect(github.writes).toEqual([
       { method: 'POST', path: `${ISSUE_PATH}/labels`, body: { labels: ['bug', 'area: export'] } },
     ]);
-    // The issue hasn't changed since the review, so its label history isn't read.
-    expect(github.calls.map((call) => call.path)).not.toContain(`${ISSUE_PATH}/events`);
+    // GitHub's `updated_at` is the snapshot the review saw, and a change in that same second could
+    // still be one this app never heard of, so one page of the label history is read.
+    expect(github.calls.filter((call) => call.path === `${ISSUE_PATH}/events`)).toHaveLength(1);
     expect(await writeBackJob()).toMatchObject({
       status: 'succeeded',
       attempts: 1,
@@ -253,6 +283,7 @@ describe('write-back jobs', () => {
     expect(github.calls.map((call) => `${call.method} ${call.path}`)).toEqual([
       'GET /repos/lumen-labs/lumen/labels',
       `GET ${ISSUE_PATH}`,
+      `GET ${ISSUE_PATH}/events`,
       `POST ${ISSUE_PATH}/labels`,
     ]);
     expect(github.writes[0]?.body).toEqual({ labels: ['bug'] });
@@ -401,10 +432,14 @@ describe('write-back jobs', () => {
     });
   });
 
-  it('applies the review over label changes made before it', async () => {
-    const { github } = await reviewed({ decision: 'accept' });
-    // `bug` was taken off an hour before the review; the issue changed again since (a label
-    // the review doesn't touch), so the job reads the events and must not misread the old one.
+  it('applies the review over label changes made before the snapshot it saw', async () => {
+    const { github } = await reviewed(
+      { decision: 'accept' },
+      { snapshot: new Date(Date.now() - 30 * 60_000) },
+    );
+    // `bug` was taken off an hour before the review, before the issue version the review was
+    // worked out against; the issue changed again since (a label the review doesn't touch), so
+    // the job reads the events and must not misread the old one.
     github.changeByHand(ISSUE, 'unlabeled', 'bug', new Date(Date.now() - 3_600_000));
     github.changeByHand(ISSUE, 'labeled', 'regression');
 
@@ -422,6 +457,85 @@ describe('write-back jobs', () => {
     expect((await writeBackJob()).result).toMatchObject({
       added: ['bug', 'area: export'],
       kept: [],
+    });
+  });
+
+  it('leaves alone a label change made after the snapshot the review saw, even before the review', async () => {
+    // This app last heard about the issue ten minutes ago. Five minutes ago a maintainer tried
+    // `bug` and took it off again, and those webhooks hadn't arrived when the review was made,
+    // so the review still adds `bug`.
+    const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+    const { github } = await reviewed({ decision: 'accept' }, { snapshot: minutesAgo(10) });
+    github.changeByHand(ISSUE, 'labeled', 'bug', minutesAgo(5));
+    github.changeByHand(ISSUE, 'unlabeled', 'bug', minutesAgo(4));
+
+    await workerFor(github).runNext();
+
+    expect(github.issueLabels.get(ISSUE)).toEqual(['needs triage', 'area: export']);
+    expect(await writeBackJob()).toMatchObject({
+      status: 'succeeded',
+      result: { added: ['area: export'], kept: ['bug'] },
+    });
+  });
+
+  it('falls back to the review time for a review stored without a snapshot', async () => {
+    const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+    const { github } = await reviewed({ decision: 'accept' }, { snapshot: minutesAgo(10) });
+    // Reviews from before the snapshot was recorded have none.
+    await db().update(reviews).set({ issueUpdatedAt: null });
+    // Before the review: not seen as a late change, so `area: export` is applied over it (the
+    // documented limit of these old rows). After the review: left alone, as always.
+    github.changeByHand(ISSUE, 'labeled', 'area: export', minutesAgo(5));
+    github.changeByHand(ISSUE, 'unlabeled', 'area: export', minutesAgo(4));
+    github.changeByHand(ISSUE, 'labeled', 'bug');
+    github.changeByHand(ISSUE, 'unlabeled', 'bug');
+
+    await workerFor(github).runNext();
+
+    expect(github.issueLabels.get(ISSUE)).toEqual(['needs triage', 'area: export']);
+    expect(await writeBackJob()).toMatchObject({
+      status: 'succeeded',
+      result: { added: ['area: export'], kept: ['bug'] },
+    });
+  });
+
+  it('does not read the label history of an old review whose issue is unchanged since', async () => {
+    const { github } = await reviewed({ decision: 'accept' });
+    await db().update(reviews).set({ issueUpdatedAt: null });
+
+    await workerFor(github).runNext();
+
+    expect(github.calls.map((call) => call.path)).not.toContain(`${ISSUE_PATH}/events`);
+    expect(github.issueLabels.get(ISSUE)).toEqual(['needs triage', 'bug', 'area: export']);
+  });
+
+  it('checks an issue with more than 1,000 events by reading only its newest pages', async () => {
+    const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+    const { github } = await reviewed({ decision: 'accept' }, { snapshot: minutesAgo(10) });
+    // 2,500 old events, all before the snapshot: 26 pages with the fake's first event.
+    const history = github.issueEvents.get(ISSUE) ?? [];
+    const longAgo = new Date('2026-10-01T00:00:00Z').getTime();
+    for (let i = 0; i < 2_500; i += 1) {
+      history.push({
+        event: i % 2 === 0 ? 'labeled' : 'unlabeled',
+        label: { name: 'regression' },
+        created_at: new Date(longAgo + i * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      });
+    }
+    github.changeByHand(ISSUE, 'labeled', 'bug', minutesAgo(5));
+    github.changeByHand(ISSUE, 'unlabeled', 'bug', minutesAgo(4));
+
+    await workerFor(github).runNext();
+
+    expect(
+      github.calls
+        .filter((call) => call.path === `${ISSUE_PATH}/events`)
+        .map((call) => call.search),
+    ).toEqual(['?per_page=100', '?per_page=100&page=26']);
+    expect(github.issueLabels.get(ISSUE)).toEqual(['needs triage', 'area: export']);
+    expect(await writeBackJob()).toMatchObject({
+      status: 'succeeded',
+      result: { added: ['area: export'], kept: ['bug'] },
     });
   });
 

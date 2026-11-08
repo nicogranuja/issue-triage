@@ -111,8 +111,8 @@ export const CLOCK_SKEW_ALLOWANCE_MS = 5_000;
  * This job never takes off a label it adds or puts back one it removes, so these events are always
  * someone else's: a person, another app, or the write-back of a later review. (A job whose review
  * has been followed by a newer review of the same issue cancels itself before this point, so an
- * older decision never overrides a newer one.) Labels the plan doesn't touch, and changes from before the review, are not
- * considered: the review already accounted for those.
+ * older decision never overrides a newer one.) Labels the plan doesn't touch, and changes from before `since` (see
+ * {@link changesCountFrom}), are not considered: the review already accounted for those.
  */
 export function respectChangesSince(
   plan: Pick<WriteBackPlan, 'add' | 'remove'>,
@@ -137,10 +137,33 @@ export function respectChangesSince(
   };
 }
 
-/** The earliest time a change on GitHub counts as made after a review (see the allowance). */
-export function changesCountFrom(reviewedAt: Date): Date {
-  const earliest = reviewedAt.getTime() - CLOCK_SKEW_ALLOWANCE_MS;
-  return new Date(Math.floor(earliest / 1000) * 1000);
+/** Rounds down to GitHub's precision, whole seconds. */
+function wholeSeconds(time: number): Date {
+  return new Date(Math.floor(time / 1000) * 1000);
+}
+
+/**
+ * The earliest time a change on GitHub counts as made after a review: the earlier of the issue
+ * version the review was worked out against (`issueUpdatedAt`) and the review itself.
+ *
+ * The snapshot matters when GitHub was ahead of this app: a maintainer changed a label shortly
+ * before the review, but its webhook arrived after it, so the review was planned against labels
+ * that were already out of date. That change is after the snapshot, so it counts as one the
+ * reviewer never saw. The snapshot is on GitHub's clock, like the events, so it needs no
+ * allowance; a change in the same second still counts, because two webhooks in one second can
+ * arrive in either order. The review time is on the database's clock and gets the allowance.
+ *
+ * Reviews stored before the snapshot was recorded have none, and fall back to the review time
+ * alone. For those, a change made before the review whose webhook was still on its way can be
+ * overwritten, as it could before.
+ */
+export function changesCountFrom(reviewedAt: Date, issueUpdatedAt: Date | null = null): Date {
+  const review = wholeSeconds(reviewedAt.getTime() - CLOCK_SKEW_ALLOWANCE_MS);
+  if (issueUpdatedAt === null) {
+    return review;
+  }
+  const snapshot = wholeSeconds(issueUpdatedAt.getTime());
+  return snapshot < review ? snapshot : review;
 }
 
 /**
@@ -192,8 +215,10 @@ export function mergeAttempt(
  * issue's labels from GitHub, so it acts on the state of now, not of when the review was made.
  *
  * Labels someone changed on GitHub after the review are left as they are (see
- * {@link respectChangesSince}). The issue's `updated_at` says whether anything changed at all; only
- * then does the job read the issue's label events, which say exactly which labels changed and when.
+ * {@link respectChangesSince}), counting from the earlier of the issue version the review saw and
+ * the review itself ({@link changesCountFrom}). The issue's `updated_at` says whether anything
+ * changed at all; only then does the job read the issue's label events, newest first and only back
+ * to that point, which say exactly which labels changed and when.
  *
  * After each change it makes, it saves what it did so far on the job, so a run that fails part-way
  * (a rate limit between adding and removing, say) keeps a record of it: the retry finds that part
@@ -221,6 +246,7 @@ export async function runWriteBackJob(
   const [row] = await db
     .select({
       reviewedAt: reviews.createdAt,
+      issueUpdatedAt: reviews.issueUpdatedAt,
       labelsAdded: reviews.labelsAdded,
       labelsRemoved: reviews.labelsRemoved,
       issueNumber: issues.number,
@@ -283,13 +309,14 @@ export async function runWriteBackJob(
     repositoryLabels,
   });
   let kept: string[] = [];
-  const since = changesCountFrom(row.reviewedAt);
+  const since = changesCountFrom(row.reviewedAt, row.issueUpdatedAt);
   if (
     updatedAt !== null &&
     updatedAt.getTime() >= since.getTime() &&
     (plan.add.length > 0 || plan.remove.length > 0)
   ) {
     const events = await github.listLabelEvents(target.owner, target.repo, target.number, {
+      since,
       signal,
     });
     const respected = respectChangesSince(plan, events, since);

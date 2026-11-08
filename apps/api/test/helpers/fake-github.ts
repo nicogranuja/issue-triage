@@ -3,8 +3,11 @@
  * `fetch`. It behaves like GitHub where it matters for write-back: adding a label the repository
  * doesn't have silently creates it, removing a label the issue doesn't have answers 404, and every
  * label change (the app's or a maintainer's, see {@link FakeGitHub.changeByHand}) is recorded in
- * the issue's events and moves its `updated_at`.
+ * the issue's events and moves its `updated_at`. Events are served oldest first, 100 to a page, with
+ * GitHub's `Link` header (`next`, `prev`, `first`, `last`).
  */
+
+const EVENTS_PER_PAGE = 100;
 
 interface IssueEvent {
   event: 'labeled' | 'unlabeled';
@@ -21,6 +24,8 @@ interface Failure {
 export interface FakeGitHubCall {
   method: string;
   path: string;
+  /** The query string, if any (`?per_page=100&page=3`). */
+  search?: string;
   body?: unknown;
 }
 
@@ -83,6 +88,7 @@ export class FakeGitHub {
     const call: FakeGitHubCall = {
       method,
       path: url.pathname,
+      ...(url.search !== '' && { search: url.search }),
       ...(body !== undefined && { body }),
     };
     this.calls.push(call);
@@ -95,10 +101,11 @@ export class FakeGitHub {
     if (failure) {
       return json(failure.failure.body, failure.failure.status, failure.failure.headers);
     }
-    return this.#answer(method, url.pathname, body);
+    return this.#answer(method, url, body);
   }) as typeof globalThis.fetch;
 
-  #answer(method: string, path: string, body: unknown): Response {
+  #answer(method: string, url: URL, body: unknown): Response {
+    const path = url.pathname;
     if (method === 'GET' && /^\/repos\/[^/]+\/[^/]+\/labels$/.test(path)) {
       return json(
         [...this.repositoryLabels].map((name) => ({ name, description: null, color: 'ededed' })),
@@ -124,10 +131,27 @@ export class FakeGitHub {
       });
     }
     if (method === 'GET' && path.endsWith('/events')) {
-      return json([
+      const all = [
         { event: 'commented', created_at: iso(new Date('2026-11-01T12:00:00Z')) },
         ...(this.issueEvents.get(number) ?? []),
-      ]);
+      ];
+      const page = Number(url.searchParams.get('page') ?? '1');
+      const pages = Math.max(1, Math.ceil(all.length / EVENTS_PER_PAGE));
+      const pageUrl = (n: number) => {
+        const link = new URL(url);
+        link.searchParams.set('page', String(n));
+        return link.toString();
+      };
+      const links = [
+        ...(page < pages ? [`<${pageUrl(page + 1)}>; rel="next"`] : []),
+        ...(page > 1 ? [`<${pageUrl(page - 1)}>; rel="prev"`] : []),
+        ...(pages > 1 ? [`<${pageUrl(1)}>; rel="first"`, `<${pageUrl(pages)}>; rel="last"`] : []),
+      ];
+      return json(
+        all.slice((page - 1) * EVENTS_PER_PAGE, page * EVENTS_PER_PAGE),
+        200,
+        links.length > 0 ? { link: links.join(', ') } : {},
+      );
     }
     if (method === 'POST' && issueMatch[2] && !issueMatch[3]) {
       const added = (body as { labels: string[] }).labels;
