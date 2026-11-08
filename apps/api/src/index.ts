@@ -64,7 +64,8 @@ main().catch((error: unknown) => {
   if (error instanceof ConfigError) {
     console.error(error.message);
   } else {
-    console.error(error);
+    // Through the safe serializer: a startup query error would otherwise print its parameters.
+    createLogger().fatal({ err: error }, 'startup failed');
   }
   process.exit(1);
 });
