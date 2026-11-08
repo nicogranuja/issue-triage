@@ -87,9 +87,12 @@ function toTriageError(error: unknown): unknown {
   }
   const request = error.requestID ? ` (request ${error.requestID})` : '';
   const message = `Model request failed: ${error.message}${request}`;
+  // The SDK's message includes the response body; logs get the status and request ID from the
+  // cause instead.
+  const logMessage = 'Model request failed';
   if (error instanceof Anthropic.APIConnectionError) {
     // Includes APIConnectionTimeoutError: the request timed out after the SDK's retries.
-    return new TriageModelError(message, { retryable: true, cause: error });
+    return new TriageModelError(message, { retryable: true, cause: error, logMessage });
   }
   const retryable =
     error instanceof Anthropic.RateLimitError ||
@@ -101,6 +104,7 @@ function toTriageError(error: unknown): unknown {
     retryable,
     ...(delay !== undefined && { retryAfterMs: delay }),
     cause: error,
+    logMessage,
   });
 }
 

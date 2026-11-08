@@ -1,6 +1,7 @@
 import { PRIORITIES, type PriorityLabels } from '@issue-triage/shared';
 import { z } from 'zod';
 
+import { LOG_MESSAGE } from './logging.js';
 import { PROMPT_VERSION, PROMPT_VERSIONS, type PromptVersion } from './triage/prompt.js';
 import {
   TRIAGE_EFFORTS,
@@ -160,6 +161,10 @@ export interface Config extends ProcessConfig {
 
 export class ConfigError extends Error {
   override readonly name = 'ConfigError';
+  /** Validation messages name the variable and the rule, never the value. */
+  get [LOG_MESSAGE](): string {
+    return this.message;
+  }
 }
 
 /**

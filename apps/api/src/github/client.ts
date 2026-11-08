@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { LOG_MESSAGE } from '../logging.js';
+
 /**
  * A small client for the parts of the GitHub REST API this app uses: reading a repository's
  * labels, and reading and changing an issue's labels. Hand-written rather than Octokit to stay
@@ -24,6 +26,11 @@ export interface GitHubLabel {
 
 export class GitHubApiError extends Error {
   override readonly name = 'GitHubApiError';
+  /**
+   * The message without GitHub's own explanation or a network error's text, which can quote what
+   * was sent: what logs may show.
+   */
+  readonly [LOG_MESSAGE]: string;
   /** HTTP status, or null when no response arrived. */
   readonly status: number | null;
   /** Whether the same request could succeed later (rate limits, outages, timeouts). */
@@ -31,8 +38,16 @@ export class GitHubApiError extends Error {
   /** How long GitHub asked us to wait before retrying, when it said. */
   readonly retryAfterMs: number | undefined;
 
-  constructor(message: string, status: number | null, retryable: boolean, retryAfterMs?: number) {
-    super(message);
+  constructor(
+    message: string,
+    status: number | null,
+    retryable: boolean,
+    retryAfterMs?: number,
+    /** Text from GitHub's response or the network error, appended to the message. */
+    detail?: string,
+  ) {
+    super(detail === undefined ? message : `${message}${detail}`);
+    this[LOG_MESSAGE] = message;
     this.status = status;
     this.retryable = retryable;
     this.retryAfterMs = retryAfterMs;
@@ -120,7 +135,13 @@ const NAME_PATTERN = /^[A-Za-z0-9_.-]{1,100}$/;
 
 function checkName(kind: string, value: string): string {
   if (!NAME_PATTERN.test(value) || value === '.' || value === '..') {
-    throw new GitHubApiError(`Invalid ${kind} name: ${JSON.stringify(value)}`, null, false);
+    throw new GitHubApiError(
+      `Invalid ${kind} name`,
+      null,
+      false,
+      undefined,
+      `: ${JSON.stringify(value)}`,
+    );
   }
   return value;
 }
@@ -201,9 +222,11 @@ export class GitHubClient {
       const parsed = labelsSchema.safeParse(await this.#json(response, 'GET', url));
       if (!parsed.success) {
         throw new GitHubApiError(
-          `Unexpected response from GET ${url.pathname}: ${z.prettifyError(parsed.error)}`,
+          `Unexpected response from GET ${url.pathname}`,
           response.status,
           false,
+          undefined,
+          `: ${z.prettifyError(parsed.error)}`,
         );
       }
       labels.push(...parsed.data);
@@ -224,9 +247,11 @@ export class GitHubClient {
     const parsed = issueSchema.safeParse(await this.#json(response, 'GET', url));
     if (!parsed.success) {
       throw new GitHubApiError(
-        `Unexpected response from GET ${url.pathname}: ${z.prettifyError(parsed.error)}`,
+        `Unexpected response from GET ${url.pathname}`,
         response.status,
         false,
+        undefined,
+        `: ${z.prettifyError(parsed.error)}`,
       );
     }
     const { number, state, labels, updated_at: updatedAt } = parsed.data;
@@ -265,9 +290,11 @@ export class GitHubClient {
       const parsed = issueEventsSchema.safeParse(await this.#json(response, 'GET', url));
       if (!parsed.success) {
         throw new GitHubApiError(
-          `Unexpected response from GET ${url.pathname}: ${z.prettifyError(parsed.error)}`,
+          `Unexpected response from GET ${url.pathname}`,
           response.status,
           false,
+          undefined,
+          `: ${z.prettifyError(parsed.error)}`,
         );
       }
       for (const entry of parsed.data) {
@@ -378,8 +405,20 @@ export class GitHubClient {
         // The caller gave up (for example, the worker is shutting down): not a GitHub problem.
         throw error;
       }
-      const reason = timeout.aborted ? `timed out after ${this.#timeoutMs} ms` : String(error);
-      throw new GitHubApiError(`${method} ${url.pathname} failed: ${reason}`, null, true);
+      if (timeout.aborted) {
+        throw new GitHubApiError(
+          `${method} ${url.pathname} failed: timed out after ${this.#timeoutMs} ms`,
+          null,
+          true,
+        );
+      }
+      throw new GitHubApiError(
+        `${method} ${url.pathname} failed`,
+        null,
+        true,
+        undefined,
+        `: ${String(error)}`,
+      );
     }
 
     if (response.ok) {
@@ -433,7 +472,7 @@ export class GitHubClient {
   ): GitHubApiError {
     const { status, headers } = response;
     const what = `${method} ${url.pathname} returned ${status}`;
-    const quoted = githubMessage ? ` (GitHub: ${githubMessage})` : '';
+    const quoted = githubMessage ? ` (GitHub: ${githubMessage})` : undefined;
 
     // Secondary rate limits send Retry-After; primary ones exhaust X-RateLimit-Remaining.
     const retryAfter = Number(headers.get('retry-after'));
@@ -462,24 +501,40 @@ export class GitHubClient {
     if (status === 403) {
       const need = method === 'GET' ? 'read' : 'write';
       return new GitHubApiError(
-        `${what}: forbidden; GITHUB_TOKEN needs Issues ${need} access to this repository, which must not be archived${quoted}`,
+        `${what}: forbidden; GITHUB_TOKEN needs Issues ${need} access to this repository, which must not be archived`,
         status,
         false,
+        undefined,
+        quoted,
       );
     }
     if (status === 404) {
       return new GitHubApiError(
-        `${what}: not found, or the token cannot see it${quoted}`,
+        `${what}: not found, or the token cannot see it`,
         status,
         false,
+        undefined,
+        quoted,
       );
     }
     if (status === 410) {
-      return new GitHubApiError(`${what}: gone (issues may be disabled)${quoted}`, status, false);
+      return new GitHubApiError(
+        `${what}: gone (issues may be disabled)`,
+        status,
+        false,
+        undefined,
+        quoted,
+      );
     }
     if (status === 422) {
-      return new GitHubApiError(`${what}: GitHub rejected the change${quoted}`, status, false);
+      return new GitHubApiError(
+        `${what}: GitHub rejected the change`,
+        status,
+        false,
+        undefined,
+        quoted,
+      );
     }
-    return new GitHubApiError(`${what}${quoted}`, status, status === 429 || status >= 500);
+    return new GitHubApiError(what, status, status === 429 || status >= 500, undefined, quoted);
   }
 }

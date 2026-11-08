@@ -1,5 +1,7 @@
 import type { IssueState, Priority } from '@issue-triage/shared';
 
+import { LOG_MESSAGE } from '../logging.js';
+
 /** Where triage suggestions come from. Chosen with `TRIAGE_PROVIDER`. */
 export const TRIAGE_PROVIDERS = ['anthropic', 'bedrock', 'fake'] as const;
 export type TriageProvider = (typeof TRIAGE_PROVIDERS)[number];
@@ -75,6 +77,7 @@ export class TriageModelError extends Error {
   readonly retryable: boolean;
   /** How long the provider asked us to wait, when it said. */
   readonly retryAfterMs: number | undefined;
+  [LOG_MESSAGE]?: string;
 
   constructor(
     message: string,
@@ -82,11 +85,21 @@ export class TriageModelError extends Error {
       retryable,
       retryAfterMs,
       cause,
-    }: { retryable: boolean; retryAfterMs?: number; cause?: unknown },
+      logMessage,
+    }: {
+      retryable: boolean;
+      retryAfterMs?: number;
+      cause?: unknown;
+      /** What logs may show in place of `message`, which can quote provider responses. */
+      logMessage?: string;
+    },
   ) {
     super(message, { cause });
     this.retryable = retryable;
     this.retryAfterMs = retryAfterMs;
+    if (logMessage !== undefined) {
+      this[LOG_MESSAGE] = logMessage;
+    }
   }
 }
 
@@ -96,8 +109,10 @@ export class InvalidModelOutputError extends TriageModelError {
   readonly problems: readonly string[];
 
   constructor(problems: readonly string[]) {
+    // The problems quote the output (an unknown label, say), so logs only get their count.
     super(`Model output failed validation after a retry: ${problems.join('; ')}`, {
       retryable: false,
+      logMessage: `Model output failed validation after a retry (${problems.length} problems)`,
     });
     this.problems = problems;
   }
@@ -108,8 +123,7 @@ export class ModelRefusalError extends TriageModelError {
   override name = 'ModelRefusalError';
 
   constructor(category: string | null) {
-    super(`The model declined to triage this issue (category: ${category ?? 'unspecified'})`, {
-      retryable: false,
-    });
+    const message = `The model declined to triage this issue (category: ${category ?? 'unspecified'})`;
+    super(message, { retryable: false, logMessage: message });
   }
 }
