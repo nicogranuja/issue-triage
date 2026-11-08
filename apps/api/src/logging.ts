@@ -88,8 +88,9 @@ function toSafeError(value: unknown, depth: number): SafeError {
   return safe;
 }
 
+/** The error's class: its `name`, or its constructor's when the name is just `Error`. */
 function errorType(error: Error): string {
-  if (IDENTIFIER.test(error.name)) {
+  if (error.name !== 'Error' && IDENTIFIER.test(error.name)) {
     return error.name;
   }
   const constructorName = (error.constructor as { name?: unknown } | undefined)?.name;
