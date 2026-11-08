@@ -80,6 +80,7 @@ async function lockSuggestion(tx: Transaction, suggestionId: number) {
       issueState: issues.state,
       issueRemovedAt: issues.removedAt,
       issueLabels: issues.labels,
+      issueUpdatedAt: issues.githubUpdatedAt,
       repositoryLabels: repositories.labels,
     })
     .from(triageSuggestions)
@@ -167,7 +168,13 @@ export async function submitReview(
     if (request.decision === 'reject') {
       const [review] = await tx
         .insert(reviews)
-        .values({ suggestionId, decision, note, reviewerLogin })
+        .values({
+          suggestionId,
+          decision,
+          note,
+          reviewerLogin,
+          issueUpdatedAt: suggestion.issueUpdatedAt,
+        })
         .returning({ id: reviews.id });
       if (!review) {
         throw new Error(`Insert returned no review for suggestion ${suggestionId}`);
@@ -198,6 +205,9 @@ export async function submitReview(
         labelsRemoved: change.remove,
         note,
         reviewerLogin,
+        // The change above was worked out against the issue as of this version; the write-back
+        // treats later changes on GitHub as ones the reviewer never saw.
+        issueUpdatedAt: suggestion.issueUpdatedAt,
       })
       .returning({ id: reviews.id });
     if (!review) {

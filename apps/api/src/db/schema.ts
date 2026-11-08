@@ -271,6 +271,13 @@ export const reviews = pgTable('reviews', {
   note: text('note'),
   /** Who reviewed. Until sign-in exists (roadmap: auth), every review is by `local`. */
   reviewerLogin: text('reviewer_login').notNull(),
+  /**
+   * The issue's `github_updated_at` when the review was stored: the version of the issue (by
+   * GitHub's clock) that `labels_added` and `labels_removed` were worked out against. A label
+   * change on GitHub after it is one the review never saw. Null for reviews stored before it was
+   * recorded.
+   */
+  issueUpdatedAt: timestamptz('issue_updated_at'),
   createdAt: createdAt(),
 });
 

@@ -108,6 +108,12 @@ describe('review API', () => {
         writeBack: { status: 'pending', attempts: 0, lastError: null, result: null },
       });
       expect(await suggestionStatus(suggestion.id)).toBe('reviewed');
+      // The issue version the change was worked out against, for the write-back's cut-off.
+      const [row] = await db()
+        .select({ issueUpdatedAt: reviews.issueUpdatedAt })
+        .from(reviews)
+        .where(eq(reviews.id, stored.id));
+      expect(row?.issueUpdatedAt).toEqual(issue.githubUpdatedAt);
 
       const [job] = await writeBackJobs();
       expect(job).toMatchObject({ issueId: issue.id, reviewId: stored.id, status: 'pending' });
