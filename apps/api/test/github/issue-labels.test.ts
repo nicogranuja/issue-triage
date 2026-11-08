@@ -173,6 +173,17 @@ describe('GitHubClient issue labels', () => {
       expect(requests).toHaveLength(10);
     });
 
+    it('fails, rather than stop early, if the pages are not listed oldest first', async () => {
+      const { fetch } = paginated(history(250).reverse());
+      const client = new GitHubClient({ token: 'ghp_test', fetch });
+
+      const error = await rejection(
+        client.listLabelEvents('lumen-labs', 'lumen', 42, { since: minute(240) }),
+      );
+      expect(error.retryable).toBe(false);
+      expect(error.message).toMatch(/not listed oldest first/);
+    });
+
     it('walks forward if GitHub leaves out the last-page link', async () => {
       const { fetch, requests } = paginated(history(250), { withLast: false });
       const client = new GitHubClient({ token: 'ghp_test', fetch });

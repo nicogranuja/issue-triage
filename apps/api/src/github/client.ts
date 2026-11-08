@@ -311,9 +311,11 @@ export class GitHubClient {
         );
       }
       let oldest = Number.POSITIVE_INFINITY;
+      let newest = Number.NEGATIVE_INFINITY;
       for (const entry of parsed.data) {
         const createdAt = new Date(entry.created_at);
         oldest = Math.min(oldest, createdAt.getTime());
+        newest = Math.max(newest, createdAt.getTime());
         if (
           (entry.event === 'labeled' || entry.event === 'unlabeled') &&
           entry.label &&
@@ -322,7 +324,7 @@ export class GitHubClient {
           events.push({ event: entry.event, label: entry.label.name, createdAt });
         }
       }
-      return { link: response.headers.get('link'), oldest };
+      return { link: response.headers.get('link'), oldest, newest };
     };
 
     const firstPage = await read(first);
@@ -339,6 +341,14 @@ export class GitHubClient {
         );
       }
       const { link, oldest } = await read(url);
+      if (rel === 'prev' && oldest < firstPage.newest) {
+        // Stopping early is only right if pages run oldest first; never guess otherwise.
+        throw new GitHubApiError(
+          `Events of issue ${issueNumber} in ${owner}/${repo} are not listed oldest first`,
+          null,
+          false,
+        );
+      }
       const following = linkTo(link, rel);
       if (rel === 'prev' && (oldest < since || isFirstPage(following))) {
         // Earlier pages are older still, and the first page has been read already.

@@ -514,7 +514,7 @@ describe('write-back jobs', () => {
     const { github } = await reviewed({ decision: 'accept' }, { snapshot: minutesAgo(10) });
     // 2,500 old events, all before the snapshot: 26 pages with the fake's first event.
     const history = github.issueEvents.get(ISSUE) ?? [];
-    const longAgo = new Date('2026-10-01T00:00:00Z').getTime();
+    const longAgo = new Date('2026-11-02T00:00:00Z').getTime();
     for (let i = 0; i < 2_500; i += 1) {
       history.push({
         event: i % 2 === 0 ? 'labeled' : 'unlabeled',
