@@ -1,5 +1,8 @@
 import type { QueueItem, Review, ReviewRequest, SuggestionDetail } from '@issue-triage/shared';
 
+/** The issue version every fake detail shows; reviews send it back as `issueUpdatedAt`. */
+export const ISSUE_UPDATED_AT = '2026-11-01T12:00:00.000Z';
+
 /** A queued suggestion for issue `number`, with its detail. */
 export function suggestion(
   number: number,
@@ -42,6 +45,7 @@ export function suggestion(
         labels: ['needs triage'],
         authorLogin: 'octo',
         githubCreatedAt: now,
+        githubUpdatedAt: ISSUE_UPDATED_AT,
       },
       repository: {
         fullName: 'lumen-labs/lumen',

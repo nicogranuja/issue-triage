@@ -93,6 +93,23 @@ async function lockSuggestion(tx: Transaction, suggestionId: number) {
 
 type LockedSuggestion = NonNullable<Awaited<ReturnType<typeof lockSuggestion>>>;
 
+/**
+ * The issue version a review was worked out against: the earlier of the version the reviewer saw
+ * (`issueUpdatedAt` from the client) and the one stored here now. The write-back treats label
+ * changes on GitHub from this time on as ones the reviewer never saw, so an earlier time only ever
+ * protects more of them. A client value later than the stored version can't be right (this app
+ * never had that version to show) and is clamped to it, so no client can move the cut-off past
+ * changes this app already knew about. Without a client value (older clients), the stored
+ * version is used.
+ */
+export function reviewedIssueVersion(seen: string | undefined, stored: Date): Date {
+  if (seen === undefined) {
+    return stored;
+  }
+  const time = Date.parse(seen);
+  return !Number.isNaN(time) && time < stored.getTime() ? new Date(time) : stored;
+}
+
 /** Throws the 409 that explains why a locked suggestion can't be reviewed, if it can't. */
 async function assertReviewable(tx: Transaction, suggestion: LockedSuggestion): Promise<void> {
   if (suggestion.issueRemovedAt !== null || suggestion.issueState !== 'open') {
@@ -163,6 +180,7 @@ export async function submitReview(
       .set({ status: 'reviewed', updatedAt: sql`now()` })
       .where(eq(triageSuggestions.id, suggestion.id));
 
+    const issueUpdatedAt = reviewedIssueVersion(request.issueUpdatedAt, suggestion.issueUpdatedAt);
     const decision = DECISIONS[request.decision];
     const note = request.note === undefined || request.note === '' ? null : request.note;
     if (request.decision === 'reject') {
@@ -173,7 +191,7 @@ export async function submitReview(
           decision,
           note,
           reviewerLogin,
-          issueUpdatedAt: suggestion.issueUpdatedAt,
+          issueUpdatedAt,
         })
         .returning({ id: reviews.id });
       if (!review) {
@@ -205,9 +223,9 @@ export async function submitReview(
         labelsRemoved: change.remove,
         note,
         reviewerLogin,
-        // The change above was worked out against the issue as of this version; the write-back
-        // treats later changes on GitHub as ones the reviewer never saw.
-        issueUpdatedAt: suggestion.issueUpdatedAt,
+        // The reviewer decided on the issue as of this version; the write-back treats later
+        // changes on GitHub as ones they never saw, even if this app had heard of them by now.
+        issueUpdatedAt,
       })
       .returning({ id: reviews.id });
     if (!review) {

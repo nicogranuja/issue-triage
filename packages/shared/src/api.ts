@@ -219,6 +219,11 @@ export const suggestionDetailSchema = z.object({
     labels: z.array(z.string()),
     authorLogin: z.string().nullable(),
     githubCreatedAt: timestamp,
+    /**
+     * GitHub's `updated_at` for the version of the issue shown here. Send it back with a review
+     * as `issueUpdatedAt`, so the write-back knows which changes the reviewer never saw.
+     */
+    githubUpdatedAt: timestamp,
   }),
   repository: z.object({
     fullName: z.string(),
@@ -234,13 +239,26 @@ export type SuggestionDetail = z.infer<typeof suggestionDetailSchema>;
 const noteSchema = z.string().trim().max(2000);
 
 /**
+ * The issue's `githubUpdatedAt` from the detail the reviewer reviewed. Label changes on GitHub
+ * from this time on count as ones the reviewer never saw, and the write-back leaves them alone.
+ * The server keeps the earlier of this and its own current version of the issue, so a value later
+ * than that is clamped to it, never trusted. Optional, for clients that predate it: the server's
+ * version is used then.
+ */
+const issueUpdatedAtSchema = timestamp.optional();
+
+/**
  * Body of `POST /api/suggestions/:id/review`. `accept` applies the suggestion as it is; `edit`
  * applies the reviewer's labels and priority (the labels are the full set the issue should have,
  * so an unticked label from `baseLabels` is removed); `reject` records the decision and writes
  * nothing.
  */
 export const reviewRequestSchema = z.discriminatedUnion('decision', [
-  z.strictObject({ decision: z.literal('accept'), note: noteSchema.optional() }),
+  z.strictObject({
+    decision: z.literal('accept'),
+    issueUpdatedAt: issueUpdatedAtSchema,
+    note: noteSchema.optional(),
+  }),
   z
     .strictObject({
       decision: z.literal('edit'),
@@ -250,6 +268,7 @@ export const reviewRequestSchema = z.discriminatedUnion('decision', [
        * removed, so a label added on GitHub while the reviewer was editing survives.
        */
       baseLabels: z.array(labelName).max(100).optional(),
+      issueUpdatedAt: issueUpdatedAtSchema,
       priority: z.enum(PRIORITIES).optional(),
       note: noteSchema.optional(),
     })
@@ -257,7 +276,11 @@ export const reviewRequestSchema = z.discriminatedUnion('decision', [
       message: 'labels and baseLabels go together',
       path: ['baseLabels'],
     }),
-  z.strictObject({ decision: z.literal('reject'), note: noteSchema.optional() }),
+  z.strictObject({
+    decision: z.literal('reject'),
+    issueUpdatedAt: issueUpdatedAtSchema,
+    note: noteSchema.optional(),
+  }),
 ]);
 export type ReviewRequest = z.input<typeof reviewRequestSchema>;
 

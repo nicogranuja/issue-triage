@@ -478,6 +478,68 @@ describe('write-back jobs', () => {
     });
   });
 
+  /**
+   * The reviewer opens an issue labelled `needs triage` + `bug`; a maintainer then takes `bug` off
+   * on GitHub and assigns someone, and both webhooks arrive; then the reviewer accepts a suggestion that adds `bug` (and
+   * `area: export`), sending back the issue version they saw, if their client knows to.
+   */
+  async function acceptedAfterAWebhookTheReviewerNeverSaw(sendSeenVersion: boolean) {
+    const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+    const labels = ['bug', 'area: export', 'needs triage'];
+    const repo = await seedRepository(db(), {
+      labels: labels.map((name) => ({ name, description: null, color: 'ededed' })),
+      labelsFetchedAt: new Date(),
+    });
+    const issue = await seedIssue(db(), repo.id, {
+      number: ISSUE,
+      labels: ['needs triage', 'bug'],
+      githubUpdatedAt: minutesAgo(10),
+    });
+    const suggestion = await seedSuggestion(db(), issue.id, { labels: ['bug', 'area: export'] });
+    const github = new FakeGitHub({ labels, issues: { [ISSUE]: ['needs triage', 'bug'] } });
+    // What the review page showed.
+    const seen = issue.githubUpdatedAt.toISOString();
+
+    github.changeByHand(ISSUE, 'unlabeled', 'bug', minutesAgo(5));
+    // The webhooks: the removal, then an assignment a minute later, which moves the issue's
+    // `updated_at` on without touching its labels.
+    await db()
+      .update(issues)
+      .set({ labels: ['needs triage'], githubUpdatedAt: minutesAgo(4) })
+      .where(eq(issues.id, issue.id));
+
+    await submitReview(
+      db(),
+      suggestion.id,
+      sendSeenVersion ? { decision: 'accept', issueUpdatedAt: seen } : { decision: 'accept' },
+      { priorityLabels: {}, writeBackDelayMs: 0 },
+    );
+    await workerFor(github).runNext();
+    return github;
+  }
+
+  it('leaves alone a label removed after the reviewer loaded the issue, even if its webhook came first', async () => {
+    const github = await acceptedAfterAWebhookTheReviewerNeverSaw(true);
+
+    expect(github.issueLabels.get(ISSUE)).toEqual(['needs triage', 'area: export']);
+    expect(await writeBackJob()).toMatchObject({
+      status: 'succeeded',
+      result: { added: ['area: export'], kept: ['bug'] },
+    });
+  });
+
+  it('still takes reviews from clients that send no version, counting from the one stored here', async () => {
+    const github = await acceptedAfterAWebhookTheReviewerNeverSaw(false);
+
+    // The review was worked out against the issue after the webhook, so the removal counts as
+    // seen and `bug` is added again: the gap the client's version closes.
+    expect(github.issueLabels.get(ISSUE)).toEqual(['needs triage', 'bug', 'area: export']);
+    expect(await writeBackJob()).toMatchObject({
+      status: 'succeeded',
+      result: { added: ['bug', 'area: export'], kept: [] },
+    });
+  });
+
   it('falls back to the review time for a review stored without a snapshot', async () => {
     const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
     const { github } = await reviewed({ decision: 'accept' }, { snapshot: minutesAgo(10) });

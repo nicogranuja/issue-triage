@@ -2,6 +2,7 @@ import {
   conflictResponseSchema,
   recentReviewsResponseSchema,
   reviewResponseSchema,
+  suggestionDetailSchema,
   type ReviewRequest,
 } from '@issue-triage/shared';
 import { eq, sql } from 'drizzle-orm';
@@ -123,6 +124,75 @@ describe('review API', () => {
 
       const queue = await app.inject({ method: 'GET', url: '/api/queue' });
       expect(queue.json()).toMatchObject({ items: [], total: 0 });
+    });
+
+    describe('the issue version the reviewer saw (issueUpdatedAt)', () => {
+      const storedVersion = async (reviewId: number) => {
+        const [row] = await db()
+          .select({ issueUpdatedAt: reviews.issueUpdatedAt })
+          .from(reviews)
+          .where(eq(reviews.id, reviewId));
+        return row?.issueUpdatedAt;
+      };
+
+      it('stores the version the reviewer saw when the issue changed since', async () => {
+        for (const request of [
+          { decision: 'accept' },
+          { decision: 'edit', labels: ['bug'], baseLabels: ['needs triage'] },
+          { decision: 'reject' },
+        ] as const) {
+          const { issue, suggestion } = await pendingSuggestion();
+          const detail = await app.inject({
+            method: 'GET',
+            url: `/api/suggestions/${suggestion.id}`,
+          });
+          const shown = suggestionDetailSchema.parse(detail.json()).issue.githubUpdatedAt;
+          expect(shown).toBe(issue.githubUpdatedAt.toISOString());
+          // A webhook moved the issue on after the page loaded.
+          await db()
+            .update(issues)
+            .set({ githubUpdatedAt: new Date(issue.githubUpdatedAt.getTime() + 60_000) })
+            .where(eq(issues.id, issue.id));
+
+          const response = await review(suggestion.id, { ...request, issueUpdatedAt: shown });
+
+          expect(response.statusCode, response.body).toBe(200);
+          const { review: stored } = reviewResponseSchema.parse(response.json());
+          expect(await storedVersion(stored.id), request.decision).toEqual(issue.githubUpdatedAt);
+        }
+      });
+
+      it('clamps a version later than the one stored here to it', async () => {
+        const { issue, suggestion } = await pendingSuggestion();
+
+        // This app never had that version to show, so it can't move the cut-off past the
+        // changes this app knows about.
+        const response = await review(suggestion.id, {
+          decision: 'accept',
+          issueUpdatedAt: new Date(issue.githubUpdatedAt.getTime() + 3_600_000).toISOString(),
+        });
+
+        expect(response.statusCode, response.body).toBe(200);
+        const { review: stored } = reviewResponseSchema.parse(response.json());
+        expect(await storedVersion(stored.id)).toEqual(issue.githubUpdatedAt);
+      });
+
+      it('refuses a value that is not a timestamp with a time zone', async () => {
+        const { suggestion } = await pendingSuggestion();
+
+        for (const issueUpdatedAt of [
+          'yesterday',
+          '',
+          '2026-11-01T12:00:00',
+          '2026-02-30T12:00:00Z',
+          1_793_563_200_000,
+          null,
+        ]) {
+          const response = await review(suggestion.id, { decision: 'accept', issueUpdatedAt });
+          expect(response.statusCode, String(issueUpdatedAt)).toBe(400);
+        }
+        expect(await suggestionStatus(suggestion.id)).toBe('pending');
+      });
     });
 
     it('adds the label mapped to the priority', async () => {

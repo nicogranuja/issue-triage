@@ -423,6 +423,7 @@ export async function getSuggestionDetail(
       labels: issue.labels,
       authorLogin: issue.authorLogin,
       githubCreatedAt: issue.githubCreatedAt.toISOString(),
+      githubUpdatedAt: issue.githubUpdatedAt.toISOString(),
     },
     repository: {
       fullName: row.fullName,
