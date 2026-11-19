@@ -149,14 +149,14 @@ only for `http(s)` URLs, and label colors are used only when they are hex.
 **Logs.** Logs never contain issue text, model output, or secrets: errors are logged by
 allowlist ([`logging.ts`](apps/api/src/logging.ts)), and tests check for canary strings.
 
-| Endpoint                             | What it does                                                               |
-| ------------------------------------ | -------------------------------------------------------------------------- |
-| `GET /api/queue`                     | `?repo=&priority=&confidence=&cursor=&limit=`, keyset-paged                |
-| `GET /api/suggestions/:id`           | Issue, suggestion, duplicates, repository labels, review                   |
-| `POST /api/suggestions/:id/review`   | `{decision: accept\|edit\|reject, labels?, baseLabels?, priority?, note?}` |
-| `DELETE /api/suggestions/:id/review` | Undo, while the write-back has not started                                 |
-| `GET /api/reviews`                   | Recent reviews and the state of their write-back                           |
-| `GET /api/repositories`              | Repositories, with how many suggestions await review                       |
+| Endpoint                             | What it does                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `GET /api/queue`                     | `?repo=&priority=&confidence=&cursor=&limit=`, keyset-paged                                 |
+| `GET /api/suggestions/:id`           | Issue, suggestion, duplicates, repository labels, review                                    |
+| `POST /api/suggestions/:id/review`   | `{decision: accept\|edit\|reject, labels?, baseLabels?, issueUpdatedAt?, priority?, note?}` |
+| `DELETE /api/suggestions/:id/review` | Undo, while the write-back has not started                                                  |
+| `GET /api/reviews`                   | Recent reviews and the state of their write-back                                            |
+| `GET /api/repositories`              | Repositories, with how many suggestions await review                                        |
 
 ## Write-back to GitHub
 
@@ -186,7 +186,10 @@ A write-back job turns a review into label changes on the issue:
   earlier of the issue version the review was worked out against (its GitHub `updated_at`, stored
   on the review) and the review itself, so a change made just before the review, whose webhook
   hadn't arrived yet, is safe too; reviews stored before that snapshot existed fall back to the
-  review time. When the issue's `updated_at` says it may have changed since, the job reads the
+  review time. The review page sends back the `updated_at` it displayed (`issueUpdatedAt`), and
+  the review keeps the earlier of that and the version stored here, so a change whose webhook
+  arrived while the reviewer had the issue open is left alone too; a client value later than the
+  stored version is clamped to it, never trusted. When the issue's `updated_at` says it may have changed since, the job reads the
   issue's label events newest first, jumping to GitHub's last page and walking back only to the
   cut-off, so issues with more than 1,000 events are checked in a page or two. This job never
   takes off a label it adds or puts back one it removes, so those events are always someone
