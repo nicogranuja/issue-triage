@@ -21,7 +21,22 @@ test('accept with the keyboard: the item leaves the queue and its write-back is 
   const count = page.getByRole('button', { name: /To review/ });
   await expect(count).toContainText('11');
 
+  // The review carries the issue version the page showed, for the write-back's cut-off.
+  const detail = await request.get('/api/queue').then(async (response) => {
+    const { items } = (await response.json()) as { items: { suggestionId: number }[] };
+    return request.get(`/api/suggestions/${items[0]?.suggestionId}`);
+  });
+  const { issue } = (await detail.json()) as { issue: { githubUpdatedAt: string } };
+  const submitted = page.waitForRequest(
+    (sent) => sent.method() === 'POST' && sent.url().endsWith('/review'),
+  );
+
   await page.keyboard.press('a');
+
+  expect((await submitted).postDataJSON()).toEqual({
+    decision: 'accept',
+    issueUpdatedAt: issue.githubUpdatedAt,
+  });
 
   await expect(queue.getByText(title)).toHaveCount(0);
   await expect(count).toContainText('10');

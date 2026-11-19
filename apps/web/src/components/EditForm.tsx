@@ -44,6 +44,13 @@ export function EditForm({
   const [selected, setSelected] = useState<ReadonlySet<string>>(
     () => new Set([...detail.issue.labels, ...detail.labels.names].map(labelKey)),
   );
+  // The issue as it was when editing began, which the ticked labels above start from. The detail
+  // can refetch while the form is open; a label added on GitHub since then is kept, and the
+  // write-back counts changes from this version on as ones the reviewer never saw.
+  const [base] = useState(() => ({
+    labels: detail.issue.labels,
+    updatedAt: detail.issue.githubUpdatedAt,
+  }));
   const filterRef = useRef<HTMLInputElement>(null);
 
   // The repository's labels, plus any current label it has since deleted, so it can be kept
@@ -74,6 +81,7 @@ export function EditForm({
     current: detail.issue.labels,
     target: chosen,
     removeUnlisted: true,
+    seen: base.labels,
     priorityLabel,
   });
 
@@ -102,7 +110,8 @@ export function EditForm({
     onSubmit({
       decision: 'edit',
       labels: chosen,
-      baseLabels: detail.issue.labels,
+      baseLabels: base.labels,
+      issueUpdatedAt: base.updatedAt,
       priority,
       ...(note.trim() !== '' && { note: note.trim() }),
     });

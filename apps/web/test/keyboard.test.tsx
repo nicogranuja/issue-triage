@@ -1,8 +1,9 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
+import { queryKeys } from '../src/api/queries.ts';
 import { isTypingTarget } from '../src/hooks/useShortcuts.ts';
-import { FakeApi, suggestion } from './fake-api.ts';
+import { FakeApi, ISSUE_UPDATED_AT, suggestion } from './fake-api.ts';
 import { renderApp, selectedTitle } from './render.tsx';
 
 function threeSuggestions() {
@@ -41,7 +42,9 @@ describe('keyboard shortcuts', () => {
 
     await user.keyboard('a');
     await waitFor(() => {
-      expect(api.reviews).toEqual([{ suggestionId: 10, body: { decision: 'accept' } }]);
+      expect(api.reviews).toEqual([
+        { suggestionId: 10, body: { decision: 'accept', issueUpdatedAt: ISSUE_UPDATED_AT } },
+      ]);
     });
     expect(selectedTitle()).toBe('Issue number 2');
     expect(document.activeElement).toHaveAttribute('aria-current', 'true');
@@ -49,7 +52,10 @@ describe('keyboard shortcuts', () => {
     await detailHeading('Issue number 2');
     await user.keyboard('r');
     await waitFor(() => {
-      expect(api.reviews.at(-1)).toEqual({ suggestionId: 20, body: { decision: 'reject' } });
+      expect(api.reviews.at(-1)).toEqual({
+        suggestionId: 20,
+        body: { decision: 'reject', issueUpdatedAt: ISSUE_UPDATED_AT },
+      });
     });
     expect(selectedTitle()).toBe('Issue number 3');
   });
@@ -129,11 +135,47 @@ describe('keyboard shortcuts', () => {
             decision: 'edit',
             labels: ['bug', 'regression'],
             baseLabels: ['needs triage'],
+            issueUpdatedAt: ISSUE_UPDATED_AT,
             priority: 'urgent',
             note: 'Seen twice',
           },
         },
       ]);
+    });
+  });
+
+  it('edits against the issue as it was when editing began, even if it refetches meanwhile', async () => {
+    const api = threeSuggestions();
+    const { user, client } = await renderApp(api);
+    await detailHeading('Issue number 1');
+
+    await user.keyboard('e');
+    const form = await screen.findByRole('form', { name: 'Edit before applying' });
+    // While the form is open, someone adds `regression` on GitHub and the detail refetches.
+    const detail = api.details.get(10);
+    if (!detail) {
+      throw new Error('No detail 10');
+    }
+    api.details.set(10, {
+      ...detail,
+      issue: {
+        ...detail.issue,
+        labels: ['needs triage', 'regression'],
+        githubUpdatedAt: '2026-11-01T12:05:00.000Z',
+      },
+    });
+    await client.refetchQueries({ queryKey: queryKeys.suggestion(10) });
+
+    await user.click(within(form).getByRole('checkbox', { name: /needs triage/ }));
+    await user.keyboard('{Meta>}{Enter}{/Meta}');
+    await waitFor(() => {
+      expect(api.reviews.at(-1)?.body).toMatchObject({
+        decision: 'edit',
+        // `regression` wasn't on the issue when the reviewer started, so it is never removed.
+        labels: ['bug'],
+        baseLabels: ['needs triage'],
+        issueUpdatedAt: ISSUE_UPDATED_AT,
+      });
     });
   });
 

@@ -244,7 +244,8 @@ export function App() {
   };
 
   const decide = (decision: 'accept' | 'reject') => {
-    submit({ decision });
+    // The issue version on screen, so changes made on GitHub since are left alone.
+    submit({ decision, ...(shown && { issueUpdatedAt: shown.issue.githubUpdatedAt }) });
   };
 
   const startEditing = () => {
