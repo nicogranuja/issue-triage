@@ -4,8 +4,13 @@
  * unless credentials are set, so it is never run in CI.
  *
  *   ANTHROPIC_API_KEY=... npm run smoke:triage
- *   TRIAGE_PROVIDER=bedrock AWS_REGION=us-east-1 AWS_PROFILE=... npm run smoke:triage
+ *   TRIAGE_PROVIDER=bedrock SMOKE_ALLOW_BEDROCK=1 AWS_REGION=us-east-1 AWS_PROFILE=... npm run smoke:triage
+ *
+ * It refuses to run from tests, CI, or an AI coding agent's session, which would inherit your
+ * credentials. Bedrock needs `SMOKE_ALLOW_BEDROCK=1` because it uses whatever AWS credentials the
+ * shell has.
  */
+import { blockedEnvironment } from '../evals/guard.js';
 import { ConfigError, loadProcessConfig } from '../src/config.js';
 import type { TriageInput } from '../src/triage/model.js';
 import { PROMPT_VERSION } from '../src/triage/prompt.js';
@@ -46,6 +51,9 @@ function credentialsFor(provider: string): string | null {
     return env.ANTHROPIC_API_KEY ? null : 'ANTHROPIC_API_KEY';
   }
   if (provider === 'bedrock') {
+    if (env.SMOKE_ALLOW_BEDROCK !== '1') {
+      return 'SMOKE_ALLOW_BEDROCK=1 (Bedrock uses whatever AWS credentials the shell has)';
+    }
     const hasAws = env.AWS_BEARER_TOKEN_BEDROCK ?? env.AWS_ACCESS_KEY_ID ?? env.AWS_PROFILE;
     return hasAws
       ? null
@@ -55,6 +63,11 @@ function credentialsFor(provider: string): string | null {
 }
 
 async function main(): Promise<void> {
+  const blocked = blockedEnvironment(process.env);
+  if (blocked) {
+    console.log(`Skipping the triage smoke test: it never makes a real call from ${blocked}.`);
+    return;
+  }
   const { triage } = loadProcessConfig({ TRIAGE_PROVIDER: 'anthropic', ...process.env });
   const missing = credentialsFor(triage.provider);
   if (missing) {

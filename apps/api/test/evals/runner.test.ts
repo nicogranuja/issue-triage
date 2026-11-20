@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { nullModel, oracleModel } from '../../evals/baselines.js';
 import { loadFixtures, triageInputFor } from '../../evals/cases.js';
 import { main } from '../../evals/cli.js';
-import { checkRealCalls } from '../../evals/guard.js';
+import { blockedEnvironment, checkRealCalls } from '../../evals/guard.js';
 import { summarize, type Report } from '../../evals/report.js';
 import { cacheKey, runEval, type RunConfig } from '../../evals/runner.js';
 import { FakeTriageModel, keywordSuggestion } from '../../src/triage/fake-model.js';
@@ -225,6 +225,33 @@ describe('the real-call guard', () => {
     expect(checkRealCalls('bedrock', { ...aws, EVAL_REAL_CALLS: '1', CI: 'true' })).toMatchObject({
       allowed: false,
     });
+  });
+
+  it('refuses bedrock without its own opt-in, even with EVAL_REAL_CALLS=1', () => {
+    const aws = { AWS_BEARER_TOKEN_BEDROCK: 'placeholder', AWS_REGION: 'us-east-1' };
+    const refused = checkRealCalls('bedrock', { ...aws, EVAL_REAL_CALLS: '1' });
+    expect(refused.allowed).toBe(false);
+    expect(refused.allowed ? '' : refused.reason).toContain('EVAL_ALLOW_BEDROCK=1');
+    expect(
+      checkRealCalls('bedrock', { ...aws, EVAL_REAL_CALLS: '1', EVAL_ALLOW_BEDROCK: '1' }),
+    ).toEqual({ allowed: true });
+  });
+
+  it('refuses every real provider from an AI coding agent session, whatever the opt-ins', () => {
+    const everything = {
+      EVAL_REAL_CALLS: '1',
+      EVAL_ALLOW_BEDROCK: '1',
+      ANTHROPIC_API_KEY: 'sk-ant-placeholder',
+      AWS_BEARER_TOKEN_BEDROCK: 'placeholder',
+      CLAUDECODE: '1',
+    };
+    for (const provider of ['anthropic', 'bedrock'] as const) {
+      const refused = checkRealCalls(provider, everything);
+      expect(refused.allowed).toBe(false);
+      expect(refused.allowed ? '' : refused.reason).toContain('CLAUDECODE');
+    }
+    expect(blockedEnvironment({ CLAUDECODE: '1' })).toContain('agent');
+    expect(blockedEnvironment({})).toBeNull();
   });
 
   it('lets the local providers run with nothing set', () => {

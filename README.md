@@ -295,7 +295,7 @@ loses nothing either, since its jobs are claimed again when their leases expire.
 To check credentials with one real model call (a few cents; no database or GitHub needed):
 
 ```sh
-ANTHROPIC_API_KEY=... npm run smoke:triage
+ANTHROPIC_API_KEY=... npm run smoke:triage   # Bedrock also needs SMOKE_ALLOW_BEDROCK=1; never runs from CI or an agent session
 ```
 
 It does nothing without credentials, and it is not part of the test suite or CI.
@@ -332,10 +332,12 @@ Options: `--model`, `--effort`, `--prompt-version`, `--reps`, `--seed`, `--concu
 (`triageInputFor`), through the same `TriageModel` interface, and every answer is re-checked
 with the worker's `suggestionSchema`.
 
-- **Real calls are opt-in.** `anthropic` needs both `EVAL_REAL_CALLS=1` and `ANTHROPIC_API_KEY`;
-  `bedrock` would use the shell's AWS credentials, so it needs `EVAL_REAL_CALLS=1` too. Both are
-  refused under Vitest and in CI, and the script doesn't load `.env`. CI runs only the fake
-  provider, as a smoke test.
+- **Real calls are opt-in.** `anthropic` needs both `EVAL_REAL_CALLS=1` and `ANTHROPIC_API_KEY`.
+  `bedrock` would use whatever AWS credentials the shell has, so it also needs its own
+  `EVAL_ALLOW_BEDROCK=1`. Real calls are refused under Vitest, in CI, and from an AI coding agent's
+  session (`CLAUDECODE` is set), since an agent's shell inherits your credentials: start real runs
+  yourself, in your own terminal. The script doesn't load `.env`. CI runs only the fake provider,
+  as a smoke test.
 - **Output** goes to `apps/api/.evals/` (gitignored): per run, `report.md`, `report.json`,
   `results.jsonl`, and `errors.jsonl`.
 - **Cache.** Real-provider outcomes are cached by a hash of the case, the model input, and the
