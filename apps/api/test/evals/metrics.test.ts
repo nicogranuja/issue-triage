@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { nullModel, oracleModel } from '../../evals/baselines.js';
 import { loadFixtures, triageInputFor } from '../../evals/cases.js';
-import { labelMetrics, priorityMetrics } from '../../evals/metrics.js';
+import { duplicateMetrics, labelMetrics, priorityMetrics } from '../../evals/metrics.js';
 import { outputContext, suggestionSchema } from '../../src/triage/output.js';
 
 describe('labelMetrics', () => {
@@ -125,5 +125,34 @@ describe('baselines on the fixtures', () => {
     expect(labels.micro.recall).toBe(0);
     expect(labels.exactSetMatch).toBe(noLabel / cases.length);
     expect(priority.confusion.low.low + priority.confusion.medium.low).toBeGreaterThan(0);
+  });
+});
+
+describe('duplicateMetrics', () => {
+  it('counts missed duplicates the pre-filter never offered against recall', () => {
+    const metrics = duplicateMetrics([
+      // Found one, missed one that was offered, and #9 was never a candidate.
+      { predicted: [1, 5], expected: [1, 2, 9], candidates: [1, 2, 5] },
+      { predicted: [], expected: [], candidates: [3] },
+      // Unknown duplicates (an exported case): left out.
+      { predicted: [4], expected: null, candidates: [4] },
+    ]);
+
+    expect(metrics.cases).toBe(2);
+    expect(metrics.micro).toMatchObject({
+      truePositives: 1,
+      falsePositives: 1,
+      falseNegatives: 2,
+      precision: 0.5,
+      recall: 1 / 3,
+    });
+    expect(metrics.preFilterRecall).toBe(2 / 3);
+  });
+
+  it('has no pre-filter recall when no case has a duplicate', () => {
+    expect(duplicateMetrics([{ predicted: [], expected: [], candidates: [] }])).toMatchObject({
+      preFilterRecall: null,
+      micro: { precision: null, recall: null },
+    });
   });
 });

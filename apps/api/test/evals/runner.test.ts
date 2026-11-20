@@ -56,6 +56,11 @@ describe('runEval over the fixtures', () => {
     expect(summary.labels.exactSetMatch).toBe(1);
     expect(summary.priority.accuracy).toBe(1);
     expect(summary.strict).toEqual({ exactSetMatch: 1, priorityAccuracy: 1 });
+    // The oracle names only offered duplicates: perfect precision, recall capped by the
+    // pre-filter, which misses the paraphrased duplicate in the fixtures.
+    expect(summary.duplicates.micro.precision).toBe(1);
+    expect(summary.duplicates.micro.recall).toBe(summary.duplicates.preFilterRecall);
+    expect(summary.duplicates.preFilterRecall).toBeLessThan(1);
   });
 
   it('gives the null model no label recall', async () => {

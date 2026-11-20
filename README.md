@@ -348,13 +348,15 @@ with the worker's `suggestionSchema`.
 ### What's measured
 
 Labels: micro and per-label precision, recall, and F1, and exact-set match. Priority: accuracy,
-within-one-level accuracy, a confusion matrix, and the majority-class baseline. These cover
+within-one-level accuracy, a confusion matrix, and the majority-class baseline. Duplicates:
+precision and recall over every true duplicate, plus the pre-filter's own recall (the share of
+true duplicates it offers the model, which caps the model's recall). These cover
 answered cases; the report shows refusal and invalid-output rates next to them, plus strict
 exact-set and priority figures that count unanswered cases as wrong, so declining hard cases
 can't raise a score. Every report shows the oracle, keyword, and null baselines side by side, and
 a report from a local provider says at the top that it's illustrative, not a measurement.
 
-Next: duplicate precision and recall (and the pre-filter's own recall), injection resistance,
+Next: injection resistance,
 first-try validity, latency, tokens and cost, an LLM judge for summaries, and paired comparisons
 between runs.
 

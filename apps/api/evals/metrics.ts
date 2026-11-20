@@ -18,7 +18,7 @@ export interface PrecisionRecall {
   f1: number | null;
 }
 
-function precisionRecall(tp: number, fp: number, fn: number): PrecisionRecall {
+export function precisionRecall(tp: number, fp: number, fn: number): PrecisionRecall {
   const precision = tp + fp === 0 ? null : tp / (tp + fp);
   const recall = tp + fn === 0 ? null : tp / (tp + fn);
   const f1 =
@@ -152,5 +152,66 @@ export function priorityMetrics(outcomes: readonly PriorityOutcome[]): PriorityM
     withinOne: n === 0 ? null : withinOne / n,
     confusion,
     majorityBaseline: n === 0 ? null : { level: majority, accuracy: expectedCounts[majority] / n },
+  };
+}
+
+export interface DuplicateOutcome {
+  predicted: readonly number[];
+  /** Null when the case's duplicates are unknown: the case is left out. */
+  expected: readonly number[] | null;
+  /** What the pre-filter offered the model. */
+  candidates: readonly number[];
+}
+
+export interface DuplicateMetrics {
+  /** Cases with known duplicates. */
+  cases: number;
+  /**
+   * Over every true duplicate, offered or not: a duplicate the pre-filter missed counts against
+   * recall, because the reviewer never sees it.
+   */
+  micro: PrecisionRecall;
+  /**
+   * Share of true duplicates the pre-filter offered as candidates: the ceiling on the model's
+   * recall. Null when no case has a duplicate.
+   */
+  preFilterRecall: number | null;
+}
+
+export function duplicateMetrics(outcomes: readonly DuplicateOutcome[]): DuplicateMetrics {
+  let tp = 0;
+  let fp = 0;
+  let fn = 0;
+  let expectedTotal = 0;
+  let offered = 0;
+  let cases = 0;
+  for (const { predicted, expected, candidates } of outcomes) {
+    if (expected === null) {
+      continue;
+    }
+    cases += 1;
+    const truth = new Set(expected);
+    const named = new Set(predicted);
+    for (const number of named) {
+      if (truth.has(number)) {
+        tp += 1;
+      } else {
+        fp += 1;
+      }
+    }
+    for (const number of truth) {
+      expectedTotal += 1;
+      if (!named.has(number)) {
+        fn += 1;
+      }
+      if (candidates.includes(number)) {
+        offered += 1;
+      }
+    }
+  }
+  return {
+    cases,
+    micro: precisionRecall(tp, fp, fn),
+    preFilterRecall: expectedTotal === 0 ? null : offered / expectedTotal,
   };
 }

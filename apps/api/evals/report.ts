@@ -9,10 +9,13 @@
  */
 import type { Priority } from '@issue-triage/shared';
 
-import type { EvalCase, Fixture } from './cases.js';
+import { candidatesFor, type EvalCase, type Fixture } from './cases.js';
 import {
+  duplicateMetrics,
   labelMetrics,
   priorityMetrics,
+  type DuplicateMetrics,
+  type DuplicateOutcome,
   type LabelMetrics,
   type PriorityMetrics,
 } from './metrics.js';
@@ -31,15 +34,19 @@ export interface RunSummary {
   cached: number;
   labels: LabelMetrics;
   priority: PriorityMetrics;
+  duplicates: DuplicateMetrics;
   /** Exact-set matches and priority hits over all scored outcomes: unanswered counts as wrong. */
   strict: { exactSetMatch: number | null; priorityAccuracy: number | null };
 }
 
 function expectedByCase(fixtures: readonly Fixture[]) {
-  const expected = new Map<string, EvalCase['expected']>();
+  const expected = new Map<string, EvalCase['expected'] & { candidates: number[] }>();
   for (const fixture of fixtures) {
     for (const evalCase of fixture.cases) {
-      expected.set(`${fixture.repository}/${evalCase.id}`, evalCase.expected);
+      expected.set(`${fixture.repository}/${evalCase.id}`, {
+        ...evalCase.expected,
+        candidates: candidatesFor(fixture, evalCase).map((candidate) => candidate.number),
+      });
     }
   }
   return expected;
@@ -49,6 +56,7 @@ export function summarize(name: string, run: RunResult, fixtures: readonly Fixtu
   const truth = expectedByCase(fixtures);
   const labelOutcomes: { predicted: string[]; expected: string[] }[] = [];
   const priorityOutcomes: { predicted: Priority; expected: Priority }[] = [];
+  const duplicateOutcomes: DuplicateOutcome[] = [];
   let refused = 0;
   let invalid = 0;
   for (const result of run.results) {
@@ -66,6 +74,11 @@ export function summarize(name: string, run: RunResult, fixtures: readonly Fixtu
       priorityOutcomes.push({
         predicted: outcome.suggestion.priority.level,
         expected: expected.priority,
+      });
+      duplicateOutcomes.push({
+        predicted: outcome.suggestion.duplicates.issues.map((issue) => issue.number),
+        expected: expected.duplicates,
+        candidates: expected.candidates,
       });
     }
   }
@@ -85,6 +98,7 @@ export function summarize(name: string, run: RunResult, fixtures: readonly Fixtu
     cached: run.results.filter((result) => result.cached).length,
     labels,
     priority,
+    duplicates: duplicateMetrics(duplicateOutcomes),
     strict: {
       exactSetMatch: share(labels.exactSetMatch),
       priorityAccuracy: share(priority.accuracy),
@@ -216,6 +230,22 @@ export function renderMarkdown(report: Report): string {
       Object.entries(report.run.priority.confusion).map(([expected, row]) => [
         `**${expected}**`,
         ...Object.values(row).map(String),
+      ]),
+    ),
+    '',
+    '## Duplicates',
+    '',
+    'Recall counts every true duplicate, including those the TF-IDF pre-filter never offered the ' +
+      'model; the pre-filter recall is the ceiling.',
+    '',
+    table(
+      ['Run', 'P', 'R', 'F1', 'Pre-filter recall'],
+      all.map((s) => [
+        s.name,
+        fmt(s.duplicates.micro.precision),
+        fmt(s.duplicates.micro.recall),
+        fmt(s.duplicates.micro.f1),
+        fmt(s.duplicates.preFilterRecall),
       ]),
     ),
     '',
