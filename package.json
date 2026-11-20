@@ -24,7 +24,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
-    "seed": "npm run seed -w @issue-triage/api"
+    "seed": "npm run seed -w @issue-triage/api",
+    "eval": "npm run eval -w @issue-triage/api --"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

@@ -17,7 +17,8 @@
     "db:generate": "NODE_OPTIONS=--conditions=@issue-triage/source drizzle-kit generate",
     "db:migrate": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env src/db/migrate.ts",
     "smoke:triage": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env scripts/smoke-triage.ts",
-    "seed": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env scripts/seed.ts"
+    "seed": "tsx --conditions=@issue-triage/source --env-file-if-exists=../../.env scripts/seed.ts",
+    "eval": "tsx --conditions=@issue-triage/source evals/cli.ts"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "1.1.1",

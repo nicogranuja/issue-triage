@@ -11,6 +11,9 @@ coverage/
 # Local data (PGlite)
 .data/
 
+# Eval output: reports, cached model outcomes, error sidecars (never committed)
+.evals/
+
 # Environment
 .env
 .env.*
