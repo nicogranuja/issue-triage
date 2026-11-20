@@ -302,8 +302,10 @@ It does nothing without credentials, and it is not part of the test suite or CI.
 
 ## Evals (in progress)
 
-The eval harness is being built. What exists so far is its labeled fixture set,
-[`apps/api/evals/fixtures/`](apps/api/evals/fixtures): 47 hand-written issues in three fictional
+**No eval results are published.** The harness runs, but it has not been run against a real
+model for this repository, and nothing in it claims a quality number.
+
+The labeled fixture set is in [`apps/api/evals/fixtures/`](apps/api/evals/fixtures): 47 hand-written issues in three fictional
 repositories (a container registry, a notes app, and a map library). Each case has the
 repository's label set, ground-truth labels and priority, the existing issues it duplicates, and
 a reference summary with the key points a good summary covers; `notes` explain the calls a
@@ -314,8 +316,47 @@ security label. A test validates the set and checks that no case text appears in
 
 Building it surfaced one measured limitation: one true duplicate (a paraphrase with no words in
 common) never reaches the model, because the TF-IDF pre-filter doesn't rank it as a candidate.
-It stays in the set. The runner, metrics, LLM judge, and comparison reports come next; no eval
-results have been produced yet.
+It stays in the set.
+
+### Running it
+
+```sh
+npm run eval                          # the keyword baseline (fake provider), no model, no key
+npm run eval -- --provider oracle     # ground truth: every metric should be perfect
+npm run eval -- --provider null       # no labels, lowest priority: the floor
+EVAL_REAL_CALLS=1 ANTHROPIC_API_KEY=... npm run eval -- --provider anthropic --effort low
+```
+
+Options: `--model`, `--effort`, `--prompt-version`, `--reps`, `--seed`, `--concurrency`,
+`--no-cache`, `--out`. Each model gets exactly what the worker would send for the issue
+(`triageInputFor`), through the same `TriageModel` interface, and every answer is re-checked
+with the worker's `suggestionSchema`.
+
+- **Real calls are opt-in.** `anthropic` needs both `EVAL_REAL_CALLS=1` and `ANTHROPIC_API_KEY`;
+  `bedrock` would use the shell's AWS credentials, so it needs `EVAL_REAL_CALLS=1` too. Both are
+  refused under Vitest and in CI, and the script doesn't load `.env`. CI runs only the fake
+  provider, as a smoke test.
+- **Output** goes to `apps/api/.evals/` (gitignored): per run, `report.md`, `report.json`,
+  `results.jsonl`, and `errors.jsonl`.
+- **Cache.** Real-provider outcomes are cached by a hash of the case, the model input, and the
+  configuration (provider, model, effort, prompt version, rendered prompt, rep, seed), so a rerun
+  costs nothing and any change misses. The local providers always run fresh.
+- **Errors sidecar.** Timeouts, rate limits, and server errors go to `errors.jsonl`, are left out
+  of every score, aren't cached, and make the run exit non-zero. Refusals and invalid output are
+  different: they are what the model did, so they're scored.
+
+### What's measured
+
+Labels: micro and per-label precision, recall, and F1, and exact-set match. Priority: accuracy,
+within-one-level accuracy, a confusion matrix, and the majority-class baseline. These cover
+answered cases; the report shows refusal and invalid-output rates next to them, plus strict
+exact-set and priority figures that count unanswered cases as wrong, so declining hard cases
+can't raise a score. Every report shows the oracle, keyword, and null baselines side by side, and
+a report from a local provider says at the top that it's illustrative, not a measurement.
+
+Next: duplicate precision and recall (and the pre-filter's own recall), injection resistance,
+first-try validity, latency, tokens and cost, an LLM judge for summaries, and paired comparisons
+between runs.
 
 ## Tests and checks
 
