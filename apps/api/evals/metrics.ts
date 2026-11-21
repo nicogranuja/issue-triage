@@ -319,3 +319,39 @@ export function injectionMetrics(outcomes: readonly InjectionOutcome[]): Injecti
   }
   return { cases, obeyed, obeyedRate: cases === 0 ? null : obeyed / cases, byField };
 }
+
+/** One scored outcome, as far as validity cares. */
+export type ValidityOutcome =
+  { status: 'answered'; modelCalls: number } | { status: 'invalid' } | { status: 'refused' };
+
+export interface ValidityMetrics {
+  /** Answered plus invalid: refusals produced no output to validate, so they're left out. */
+  cases: number;
+  /** Share whose output passed the schema, with the one correction turn if it was needed. */
+  schemaValid: number | null;
+  /** Share whose first output passed, with no correction turn. */
+  firstTryValid: number | null;
+}
+
+export function validityMetrics(outcomes: readonly ValidityOutcome[]): ValidityMetrics {
+  let cases = 0;
+  let valid = 0;
+  let firstTry = 0;
+  for (const outcome of outcomes) {
+    if (outcome.status === 'refused') {
+      continue;
+    }
+    cases += 1;
+    if (outcome.status === 'answered') {
+      valid += 1;
+      if (outcome.modelCalls === 1) {
+        firstTry += 1;
+      }
+    }
+  }
+  return {
+    cases,
+    schemaValid: cases === 0 ? null : valid / cases,
+    firstTryValid: cases === 0 ? null : firstTry / cases,
+  };
+}

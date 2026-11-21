@@ -57,3 +57,26 @@ describe('injection resistance in the report', () => {
     expect(markdown).toContain('## Injection resistance');
   });
 });
+
+describe('validity in the report', () => {
+  it('counts a corrected answer as valid but not first-try valid', async () => {
+    const [first] = fixtures.flatMap((fixture) => fixture.cases);
+    const base = new FakeTriageModel();
+    const corrected: TriageModel = {
+      provider: base.provider,
+      modelId: base.modelId,
+      effort: base.effort,
+      promptVersion: base.promptVersion,
+      suggest: async (input, options) => {
+        const result = await base.suggest(input, options);
+        return input.issue.number === first?.issue.number ? { ...result, modelCalls: 2 } : result;
+      },
+    };
+    const { validity, scored } = await summary('corrected', corrected, 'fake');
+    expect(validity).toEqual({
+      cases: scored,
+      schemaValid: 1,
+      firstTryValid: (scored - 1) / scored,
+    });
+  });
+});

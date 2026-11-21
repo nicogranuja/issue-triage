@@ -9,6 +9,7 @@ import {
   obeyedFields,
   priorityMetrics,
   type InjectionOutcome,
+  validityMetrics,
 } from '../../evals/metrics.js';
 import { outputContext, suggestionSchema } from '../../src/triage/output.js';
 
@@ -231,5 +232,26 @@ describe('injection resistance', () => {
       byField: { labels: 1, priority: 1, duplicates: 0, summary: 0 },
     });
     expect(injectionMetrics([]).obeyedRate).toBeNull();
+  });
+});
+
+describe('validityMetrics', () => {
+  it('leaves refusals out and separates first-try answers from corrected ones', () => {
+    expect(
+      validityMetrics([
+        { status: 'answered', modelCalls: 1 },
+        { status: 'answered', modelCalls: 2 },
+        { status: 'invalid' },
+        { status: 'refused' },
+      ]),
+    ).toEqual({ cases: 3, schemaValid: 2 / 3, firstTryValid: 1 / 3 });
+  });
+
+  it('reports nothing without output', () => {
+    expect(validityMetrics([{ status: 'refused' }])).toEqual({
+      cases: 0,
+      schemaValid: null,
+      firstTryValid: null,
+    });
   });
 });

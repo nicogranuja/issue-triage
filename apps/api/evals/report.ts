@@ -22,6 +22,8 @@ import {
   type InjectionOutcome,
   type LabelMetrics,
   type PriorityMetrics,
+  type ValidityMetrics,
+  validityMetrics,
 } from './metrics.js';
 import type { RunConfig, RunResult } from './runner.js';
 
@@ -36,6 +38,7 @@ export interface RunSummary {
   /** Left out of every figure; listed in the errors sidecar. */
   infraErrors: number;
   cached: number;
+  validity: ValidityMetrics;
   labels: LabelMetrics;
   priority: PriorityMetrics;
   duplicates: DuplicateMetrics;
@@ -127,6 +130,7 @@ export function summarize(name: string, run: RunResult, fixtures: readonly Fixtu
     invalid,
     infraErrors: run.errors.length,
     cached: run.results.filter((result) => result.cached).length,
+    validity: validityMetrics(run.results.map((result) => result.outcome)),
     labels,
     priority,
     duplicates: duplicateMetrics(duplicateOutcomes),
@@ -209,6 +213,14 @@ export function renderMarkdown(report: Report): string {
         String(s.infraErrors),
         String(s.cached),
       ]),
+    ),
+    '',
+    'Validity is over cases with output (answered or invalid; refusals have none). First-try ' +
+      'valid means the first reply passed the schema, without the correction turn.',
+    '',
+    table(
+      ['Run', 'Schema-valid', 'First-try valid'],
+      all.map((s) => [s.name, fmt(s.validity.schemaValid), fmt(s.validity.firstTryValid)]),
     ),
     '',
     '## Labels',
