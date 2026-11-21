@@ -414,7 +414,13 @@ What the agreement figures do and don't show:
 - **18 items is small.** One item moves exact match by about 6 points; read the per-item pairs in
   `calibration.jsonl`, not just the totals.
 
-Next: a pairwise judge mode run in both orders, and paired comparisons between runs.
+A pairwise judge ([`pairwise.ts`](apps/api/evals/pairwise.ts)) compares two summaries of the same
+issue, asked once in each order: a win counts only when both orders agree, and an order flip
+counts as a tie (flips are also counted on their own). It isn't in the CLI yet: it needs two runs
+to compare.
+
+Next: comparison mode between runs (a paired bootstrap, with the pairwise judge), and exporting
+reviewed cases.
 
 ## Tests and checks
 
