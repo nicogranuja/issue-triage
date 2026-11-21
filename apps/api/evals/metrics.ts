@@ -388,3 +388,31 @@ export function refusalMetrics(
     declinedByRequestedModel: rate(refused + fellBack),
   };
 }
+
+/**
+ * The nearest-rank percentile: the smallest value with at least `p` percent of values at or below
+ * it. Always a value that occurred, with no interpolation. Null with no values.
+ */
+export function percentile(values: readonly number[], p: number): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const rank = Math.max(1, Math.ceil((p / 100) * sorted.length));
+  return sorted[rank - 1] ?? null;
+}
+
+export interface LatencyMetrics {
+  /** Answered cases: the time spent waiting for the model, correction turn included. */
+  cases: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+}
+
+export function latencyMetrics(latenciesMs: readonly number[]): LatencyMetrics {
+  return {
+    cases: latenciesMs.length,
+    p50Ms: percentile(latenciesMs, 50),
+    p95Ms: percentile(latenciesMs, 95),
+  };
+}

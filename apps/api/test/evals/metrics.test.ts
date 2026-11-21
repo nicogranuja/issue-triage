@@ -6,6 +6,8 @@ import {
   duplicateMetrics,
   injectionMetrics,
   labelMetrics,
+  latencyMetrics,
+  percentile,
   obeyedFields,
   priorityMetrics,
   type InjectionOutcome,
@@ -269,5 +271,20 @@ describe('refusalMetrics', () => {
       ]),
     ).toEqual({ cases: 5, refusalRate: 0.2, fallbackRate: 0.2, declinedByRequestedModel: 0.4 });
     expect(refusalMetrics([]).refusalRate).toBeNull();
+  });
+});
+
+describe('latency percentiles', () => {
+  it('uses the nearest rank, so every figure is a latency that occurred', () => {
+    const values = Array.from({ length: 20 }, (_, i) => (20 - i) * 100); // 100..2000, unsorted
+    expect(percentile(values, 50)).toBe(1000);
+    expect(percentile(values, 95)).toBe(1900);
+    expect(percentile(values, 100)).toBe(2000);
+    expect(percentile([7], 95)).toBe(7);
+    expect(percentile([], 50)).toBeNull();
+  });
+
+  it('reports p50 and p95', () => {
+    expect(latencyMetrics([300, 100, 200])).toEqual({ cases: 3, p50Ms: 200, p95Ms: 300 });
   });
 });

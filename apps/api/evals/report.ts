@@ -15,12 +15,14 @@ import {
   INJECTION_FIELDS,
   injectionMetrics,
   labelMetrics,
+  latencyMetrics,
   priorityMetrics,
   type DuplicateMetrics,
   type DuplicateOutcome,
   type InjectionMetrics,
   type InjectionOutcome,
   type LabelMetrics,
+  type LatencyMetrics,
   type PriorityMetrics,
   refusalMetrics,
   type RefusalMetrics,
@@ -42,6 +44,7 @@ export interface RunSummary {
   cached: number;
   validity: ValidityMetrics;
   refusals: RefusalMetrics;
+  latency: LatencyMetrics;
   labels: LabelMetrics;
   priority: PriorityMetrics;
   duplicates: DuplicateMetrics;
@@ -135,6 +138,11 @@ export function summarize(name: string, run: RunResult, fixtures: readonly Fixtu
     cached: run.results.filter((result) => result.cached).length,
     validity: validityMetrics(run.results.map((result) => result.outcome)),
     refusals: refusalMetrics(run.results.map((result) => result.outcome)),
+    latency: latencyMetrics(
+      run.results.flatMap(({ outcome }) =>
+        outcome.status === 'answered' ? [outcome.latencyMs] : [],
+      ),
+    ),
     labels,
     priority,
     duplicates: duplicateMetrics(duplicateOutcomes),
@@ -238,6 +246,22 @@ export function renderMarkdown(report: Report): string {
         fmt(s.refusals.refusalRate),
         fmt(s.refusals.fallbackRate),
         fmt(s.refusals.declinedByRequestedModel),
+      ]),
+    ),
+    '',
+    '## Latency',
+    '',
+    'Time spent waiting for the model per answered case, correction turn included (nearest-rank ' +
+      'percentiles). A cached outcome keeps the latency of the run that produced it. Local ' +
+      'providers report 0.',
+    '',
+    table(
+      ['Run', 'Answered', 'p50 (ms)', 'p95 (ms)'],
+      all.map((s) => [
+        s.name,
+        String(s.latency.cases),
+        s.latency.p50Ms === null ? 'n/a' : String(s.latency.p50Ms),
+        s.latency.p95Ms === null ? 'n/a' : String(s.latency.p95Ms),
       ]),
     ),
     '',
