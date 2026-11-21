@@ -328,7 +328,7 @@ EVAL_REAL_CALLS=1 ANTHROPIC_API_KEY=... npm run eval -- --provider anthropic --e
 ```
 
 Options: `--model`, `--effort`, `--prompt-version`, `--reps`, `--seed`, `--concurrency`,
-`--no-cache`, `--out`. Each model gets exactly what the worker would send for the issue
+`--no-cache`, `--out`, and `--judge` (below). Each model gets exactly what the worker would send for the issue
 (`triageInputFor`), through the same `TriageModel` interface, and every answer is re-checked
 with the worker's `suggestionSchema`.
 
@@ -339,7 +339,8 @@ with the worker's `suggestionSchema`.
   yourself, in your own terminal. The script doesn't load `.env`. CI runs only the fake provider,
   as a smoke test.
 - **Output** goes to `apps/api/.evals/` (gitignored): per run, `report.md`, `report.json`,
-  `results.jsonl`, and `errors.jsonl`.
+  `results.jsonl`, and `errors.jsonl` (with `--judge`, also `judgments.jsonl`,
+  `calibration.jsonl`, and `judge-errors.jsonl`).
 - **Cache.** Real-provider outcomes are cached by a hash of the case, the model input, and the
   configuration (provider, model, effort, prompt version, rendered prompt, rep, seed), so a rerun
   costs nothing and any change misses. The local providers always run fresh.
@@ -370,16 +371,50 @@ a report from a local provider says at the top that it's illustrative, not a mea
   ([`pricing.ts`](apps/api/evals/pricing.ts)). Local providers cost 0. Bedrock (priced by AWS) and
   models missing from the table show no total rather than a wrong one.
 
-Started, not yet in the report: an LLM judge for summaries
-([`judge.ts`](apps/api/evals/judge.ts)). It scores faithfulness, key-point coverage, and
-concision from 1 to 5 against written anchors, with a rationale for each, on
-`claude-sonnet-5-5` at effort `high` with a versioned prompt and no refusal fallback. It never
-sees the model or prompt version that wrote a summary, or the reference summary, and its rubric
-says length is not quality. It has only been run against a fake. Its scores mean nothing until a
-hand-scored calibration set shows how well it agrees with a person.
+### The summary judge
 
-Next: the calibration set and judge-human agreement, a pairwise judge mode run in both orders,
-wiring the judge into the report, and paired comparisons between runs.
+`--judge fake|anthropic` (off by default) adds an LLM judge for summaries
+([`judge.ts`](apps/api/evals/judge.ts), [`judging.ts`](apps/api/evals/judging.ts)). It scores
+faithfulness, key-point coverage, and concision from 1 to 5 against written anchors, with a
+rationale for each, on `claude-sonnet-5-5` at effort `high` with a versioned prompt (`judge-v1`)
+and no refusal fallback. It sees the issue, the case's key points, and the summary, and never the
+model or prompt version that wrote it, the reference summary, or the other ground truth; its
+rubric says length is not quality.
+
+```sh
+npm run eval -- --judge fake                                    # the plumbing, locally
+EVAL_REAL_CALLS=1 ANTHROPIC_API_KEY=... npm run eval -- --judge anthropic   # in your own terminal
+```
+
+- **Same guard as a real provider.** `--judge anthropic` is a billed call whatever the provider
+  under test is, so it needs `EVAL_REAL_CALLS=1` and `ANTHROPIC_API_KEY`, and is refused under
+  Vitest, in CI, and from an AI coding agent's session.
+- **Report.** Per criterion, the mean and the 1-5 distribution, with the judge model and prompt
+  version; the judge's own tokens and cost, apart from the run's.
+- **Cache.** Verdicts go to `.evals/judge-cache/`, keyed by the judge model, effort, prompt
+  version, the rendered judge request, and the output schema. The key leaves out who wrote the
+  summary (the judge doesn't know), so identical text is judged once. A judge refusal or an
+  off-schema reply is cached and counted; timeouts and rate limits go to `judge-errors.jsonl`.
+- **Calibration.** [`calibration/summaries-v1.json`](apps/api/evals/calibration/summaries-v1.json)
+  holds 18 summaries of eval cases, hand-scored on the `judge-v1` anchors with a note for each
+  score: good and partial summaries, and the known negatives (empty, "I don't know", a summary of
+  the wrong issue, a fluent but unfaithful one, an echoed injection, a copy of the issue), plus a
+  verbose but correct summary that checks for length bias. Every judged run also judges this set
+  and reports agreement per criterion ([`agreement.ts`](apps/api/evals/agreement.ts)): exact
+  match, within one, Spearman's rank correlation (ties averaged), and the mean difference.
+
+What the agreement figures do and don't show:
+
+- **The fake judge's agreement is meaningless.** It's a keyword rule; its figures only show that
+  judging, caching, and the agreement math work. No real judge has been run: a real agreement
+  figure needs you to run `--judge anthropic` yourself.
+- **The hand scores were written by an AI agent** applying the anchors, and haven't been re-scored
+  by a person. Until they are, agreement is with an AI-written answer key. The notes flag the
+  items where two anchors were close.
+- **18 items is small.** One item moves exact match by about 6 points; read the per-item pairs in
+  `calibration.jsonl`, not just the totals.
+
+Next: a pairwise judge mode run in both orders, and paired comparisons between runs.
 
 ## Tests and checks
 

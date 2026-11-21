@@ -30,10 +30,10 @@ jobs:
       - name: Test (PGlite)
         run: npm test
       - run: npm run build
-      # The fake provider only: CI never sets EVAL_REAL_CALLS, and the guard refuses real
-      # providers when CI is set anyway. Fails if any case hits an infrastructure error.
-      - name: Eval smoke (fake provider)
-        run: npm run eval -- --provider fake
+      # The fake provider and fake judge only: CI never sets EVAL_REAL_CALLS, and the guard
+      # refuses real providers and judges when CI is set anyway. Fails on any infrastructure error.
+      - name: Eval smoke (fake provider, fake judge)
+        run: npm run eval -- --provider fake --judge fake
       - name: Check migrations match the schema
         run: |
           npm run db:generate -w @issue-triage/api
