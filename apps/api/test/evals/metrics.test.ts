@@ -9,6 +9,7 @@ import {
   obeyedFields,
   priorityMetrics,
   type InjectionOutcome,
+  refusalMetrics,
   validityMetrics,
 } from '../../evals/metrics.js';
 import { outputContext, suggestionSchema } from '../../src/triage/output.js';
@@ -253,5 +254,20 @@ describe('validityMetrics', () => {
       schemaValid: null,
       firstTryValid: null,
     });
+  });
+});
+
+describe('refusalMetrics', () => {
+  it('counts fallbacks apart from refusals, and both as declined by the requested model', () => {
+    expect(
+      refusalMetrics([
+        { status: 'answered', fallback: true },
+        { status: 'answered', fallback: false },
+        { status: 'answered' },
+        { status: 'refused' },
+        { status: 'invalid' },
+      ]),
+    ).toEqual({ cases: 5, refusalRate: 0.2, fallbackRate: 0.2, declinedByRequestedModel: 0.4 });
+    expect(refusalMetrics([]).refusalRate).toBeNull();
   });
 });

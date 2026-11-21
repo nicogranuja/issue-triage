@@ -23,6 +23,7 @@ import { serializeError, type SafeError } from '../src/logging.js';
 import {
   InvalidModelOutputError,
   ModelRefusalError,
+  type ModelUsage,
   type TokenUsage,
   type TriageInput,
   type TriageModel,
@@ -32,8 +33,12 @@ import { outputContext, outputJsonSchema, suggestionSchema } from '../src/triage
 import { isPromptVersion, promptFor } from '../src/triage/prompt.js';
 import { triageInputFor, type EvalCase, type Fixture } from './cases.js';
 
-/** Bump when the cached outcome format changes, so old entries miss. */
-const CACHE_FORMAT = 1;
+/**
+ * Bump when the cached outcome format changes, so old entries miss. 2: outcomes record per-model
+ * usage and the fallback flag; a format-1 entry can't say whether a fallback answered, so its
+ * cost and fallback rate would be wrong.
+ */
+const CACHE_FORMAT = 2;
 
 /** What a run is: which model, and how it is sampled. All of it is part of the cache key. */
 export interface RunConfig {
@@ -58,15 +63,21 @@ export type ScoredOutcome =
       /** The model that answered, as the provider reported it. */
       model: string;
       usage: TokenUsage;
+      /** Every attempt's tokens by model (see `TriageResult`). Absent: `usage` is the total. */
+      usageByModel?: ModelUsage[];
+      /** A server-side fallback model answered. Absent: the provider can't tell. */
+      fallback?: boolean;
       modelCalls: number;
       latencyMs: number;
     }
-  | { status: 'refused'; message: string }
+  | { status: 'refused'; message: string; usageByModel?: ModelUsage[] }
   | {
       status: 'invalid';
       /** Where the output failed: the provider's own check, or the runner's re-check. */
       stage: 'provider' | 'recheck';
       problems: string[];
+      /** What the calls used. Absent when the provider didn't say. */
+      usageByModel?: ModelUsage[];
     };
 
 export interface CaseResult {
@@ -176,6 +187,8 @@ function recheck(
       status: 'invalid',
       stage: 'recheck',
       problems: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
+      // The calls were made and billed, whatever the re-check says.
+      usageByModel: outcome.usageByModel ?? [{ model: outcome.model, usage: outcome.usage }],
     };
   }
   return { ...outcome, suggestion: parsed.data };
@@ -193,6 +206,8 @@ async function attempt(model: TriageModel, input: TriageInput, signal: AbortSign
           suggestion: result.suggestion,
           model: result.model,
           usage: result.usage,
+          ...(result.usageByModel !== undefined && { usageByModel: result.usageByModel }),
+          ...(result.fallback !== undefined && { fallback: result.fallback }),
           modelCalls: result.modelCalls,
           latencyMs: result.latencyMs,
         },
@@ -201,11 +216,22 @@ async function attempt(model: TriageModel, input: TriageInput, signal: AbortSign
     } satisfies Attempt;
   } catch (error) {
     if (error instanceof ModelRefusalError) {
-      return { outcome: { status: 'refused', message: error.message } } satisfies Attempt;
+      return {
+        outcome: {
+          status: 'refused',
+          message: error.message,
+          ...(error.usageByModel && { usageByModel: [...error.usageByModel] }),
+        },
+      } satisfies Attempt;
     }
     if (error instanceof InvalidModelOutputError) {
       return {
-        outcome: { status: 'invalid', stage: 'provider', problems: [...error.problems] },
+        outcome: {
+          status: 'invalid',
+          stage: 'provider',
+          problems: [...error.problems],
+          ...(error.usageByModel && { usageByModel: [...error.usageByModel] }),
+        },
       } satisfies Attempt;
     }
     // Everything else (timeouts, rate limits, auth, a crash in the provider) is infrastructure.

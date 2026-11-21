@@ -355,3 +355,36 @@ export function validityMetrics(outcomes: readonly ValidityOutcome[]): ValidityM
     firstTryValid: cases === 0 ? null : firstTry / cases,
   };
 }
+
+export interface RefusalMetrics {
+  /** Scored outcomes. */
+  cases: number;
+  /** Share the model declined, with no fallback answering. */
+  refusalRate: number | null;
+  /** Share a server-side fallback model answered. */
+  fallbackRate: number | null;
+  /**
+   * Share the requested model declined: refusals plus fallbacks. A fallback hides a refusal from
+   * the refusal rate, so this is the requested model's own figure.
+   */
+  declinedByRequestedModel: number | null;
+}
+
+export function refusalMetrics(
+  outcomes: readonly (
+    { status: 'refused' | 'invalid' } | { status: 'answered'; fallback?: boolean }
+  )[],
+): RefusalMetrics {
+  const cases = outcomes.length;
+  const refused = outcomes.filter((outcome) => outcome.status === 'refused').length;
+  const fellBack = outcomes.filter(
+    (outcome) => outcome.status === 'answered' && outcome.fallback === true,
+  ).length;
+  const rate = (count: number) => (cases === 0 ? null : count / cases);
+  return {
+    cases,
+    refusalRate: rate(refused),
+    fallbackRate: rate(fellBack),
+    declinedByRequestedModel: rate(refused + fellBack),
+  };
+}

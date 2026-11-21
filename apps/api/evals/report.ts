@@ -22,6 +22,8 @@ import {
   type InjectionOutcome,
   type LabelMetrics,
   type PriorityMetrics,
+  refusalMetrics,
+  type RefusalMetrics,
   type ValidityMetrics,
   validityMetrics,
 } from './metrics.js';
@@ -39,6 +41,7 @@ export interface RunSummary {
   infraErrors: number;
   cached: number;
   validity: ValidityMetrics;
+  refusals: RefusalMetrics;
   labels: LabelMetrics;
   priority: PriorityMetrics;
   duplicates: DuplicateMetrics;
@@ -131,6 +134,7 @@ export function summarize(name: string, run: RunResult, fixtures: readonly Fixtu
     infraErrors: run.errors.length,
     cached: run.results.filter((result) => result.cached).length,
     validity: validityMetrics(run.results.map((result) => result.outcome)),
+    refusals: refusalMetrics(run.results.map((result) => result.outcome)),
     labels,
     priority,
     duplicates: duplicateMetrics(duplicateOutcomes),
@@ -221,6 +225,20 @@ export function renderMarkdown(report: Report): string {
     table(
       ['Run', 'Schema-valid', 'First-try valid'],
       all.map((s) => [s.name, fmt(s.validity.schemaValid), fmt(s.validity.firstTryValid)]),
+    ),
+    '',
+    'Refusals and fallbacks are over scored outcomes. A fallback (a `fallback_message` entry in ' +
+      '`usage.iterations`) means the requested model declined and a server-side fallback model ' +
+      'answered, so it hides a refusal; "declined by the requested model" adds them back.',
+    '',
+    table(
+      ['Run', 'Refusal rate', 'Fallback rate', 'Declined by the requested model'],
+      all.map((s) => [
+        s.name,
+        fmt(s.refusals.refusalRate),
+        fmt(s.refusals.fallbackRate),
+        fmt(s.refusals.declinedByRequestedModel),
+      ]),
     ),
     '',
     '## Labels',
