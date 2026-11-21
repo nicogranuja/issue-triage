@@ -9,6 +9,7 @@
  */
 import type { Priority } from '@issue-triage/shared';
 
+import type { CalibrationResult } from './calibration.js';
 import { candidatesFor, type EvalCase, type Fixture } from './cases.js';
 import { LOCAL_EVAL_PROVIDERS } from './guard.js';
 import {
@@ -32,6 +33,8 @@ import {
   type ValidityMetrics,
   validityMetrics,
 } from './metrics.js';
+import { JUDGE_CRITERIA } from './judge.js';
+import type { JudgeSummary } from './judging.js';
 import { costUsd, PRICING_SOURCE } from './pricing.js';
 import type { RunConfig, RunResult, ScoredOutcome } from './runner.js';
 
@@ -179,6 +182,14 @@ export function summarize(name: string, run: RunResult, fixtures: readonly Fixtu
   };
 }
 
+/** The summary judge's scores for the run under test, next to its agreement with hand scores. */
+export interface JudgeReport {
+  /** Says what the judge figures are and are not. Repeated at the top of the judge section. */
+  notice: string;
+  run: JudgeSummary;
+  calibration: { summary: JudgeSummary; result: CalibrationResult };
+}
+
 export interface Report {
   /** Says what the numbers are and are not. Repeated at the top of the markdown. */
   notice: string;
@@ -186,6 +197,25 @@ export interface Report {
   cases: number;
   run: RunSummary;
   baselines: RunSummary[];
+  /** Present when the run was judged (`--judge`). */
+  judge?: JudgeReport;
+}
+
+export function judgeNotice(summary: JudgeSummary, calibration: CalibrationResult): string {
+  if (summary.config.kind === 'fake') {
+    return (
+      'The fake judge is a keyword rule, not a language model. Its scores, and its agreement ' +
+      'with the hand scores, are meaningless: they only show that the judging, caching, and ' +
+      'agreement plumbing works. A real agreement figure needs a real judge run ' +
+      '(EVAL_REAL_CALLS=1 with ANTHROPIC_API_KEY, --judge anthropic), started by you in your own terminal.'
+    );
+  }
+  return (
+    `Judge scores from ${summary.config.model} (${summary.config.promptVersion}). Read them ` +
+    `through the agreement figures: they come from ${calibration.judged} hand-scored summaries, ` +
+    'too few for fine distinctions, and the hand scores were written by an AI agent and not yet ' +
+    're-scored by a person. Where agreement is low, the judge scores are not evidence.'
+  );
 }
 
 export function buildReport(
@@ -193,6 +223,7 @@ export function buildReport(
   baselines: RunSummary[],
   fixtures: readonly Fixture[],
   now: Date = new Date(),
+  judge?: JudgeReport,
 ): Report {
   const cases = fixtures.reduce((total, fixture) => total + fixture.cases.length, 0);
   const notice = (LOCAL_EVAL_PROVIDERS as readonly string[]).includes(run.config.provider)
@@ -206,6 +237,7 @@ export function buildReport(
     cases,
     run,
     baselines,
+    ...(judge !== undefined && { judge }),
   };
 }
 
@@ -416,5 +448,97 @@ export function renderMarkdown(report: Report): string {
     ),
     '',
   ];
+  if (report.judge) {
+    lines.push(...judgeSection(report.judge));
+  }
   return lines.join('\n');
+}
+
+const tokenCells = (summary: JudgeSummary) => [
+  String(summary.cost.tokens.inputTokens),
+  String(summary.cost.tokens.cacheCreationInputTokens),
+  String(summary.cost.tokens.cacheReadInputTokens),
+  String(summary.cost.tokens.outputTokens),
+  summary.cost.totalUsd === null
+    ? `n/a (${summary.cost.unpriced ?? 'unknown'})`
+    : usd(summary.cost.totalUsd),
+];
+
+function judgeSection({ notice, run, calibration }: JudgeReport): string[] {
+  const { config } = run;
+  const { result } = calibration;
+  const signed = (value: number | null) =>
+    value === null ? 'n/a' : `${value > 0 ? '+' : ''}${value.toFixed(3)}`;
+  return [
+    '## Summary judge',
+    '',
+    `> **${notice}**`,
+    '',
+    `Judge \`${config.kind}\`, model \`${config.model}\`, prompt \`${config.promptVersion}\`, ` +
+      `effort \`${config.effort ?? 'none'}\`. The judge sees the issue, the case's key points, and ` +
+      'the summary: not the reference summary, the other ground truth, or which model or prompt ' +
+      'version wrote the summary.',
+    '',
+    `${run.judged} summaries judged, ${run.failed} judge failures (declined, another model, or ` +
+      `outside the schema), ${run.infraErrors} infrastructure errors, ${run.cached} from cache, ` +
+      `${run.skipped} not judged (no answer, or no reference).`,
+    '',
+    table(
+      ['Criterion', 'Judged', 'Mean', '1', '2', '3', '4', '5'],
+      JUDGE_CRITERIA.map((criterion) => {
+        const scores = run.scores[criterion];
+        return [
+          criterion,
+          String(scores.n),
+          fmt(scores.mean),
+          ...([1, 2, 3, 4, 5] as const).map((score) => String(scores.distribution[score])),
+        ];
+      }),
+    ),
+    '',
+    '### Judge-hand agreement',
+    '',
+    `The same judge over the calibration set \`${result.version}\` (hand scores on the ` +
+      `\`${result.rubric}\` anchors): ${result.judged} of ${result.items} items judged. ` +
+      'Within one is lenient on a 1-5 scale; Spearman is n/a when a side gives every item the ' +
+      'same score. A positive mean difference means the judge scores higher than the hand scores.',
+    ...(result.rubric === config.promptVersion
+      ? []
+      : [
+          '',
+          `**The hand scores apply the \`${result.rubric}\` anchors, but the judge ran ` +
+            `\`${config.promptVersion}\`: re-score the set before comparing.**`,
+        ]),
+    '',
+    `Hand scores: ${result.scoredBy}`,
+    '',
+    table(
+      ['Criterion', 'Items', 'Exact match', 'Within one', 'Spearman', 'Mean difference'],
+      JUDGE_CRITERIA.map((criterion) => {
+        const a = result.agreement[criterion];
+        return [
+          criterion,
+          String(a.n),
+          fmt(a.exactMatch),
+          fmt(a.withinOne),
+          fmt(a.spearman),
+          signed(a.meanDifference),
+        ];
+      }),
+    ),
+    '',
+    '### Judge tokens and cost',
+    '',
+    "The judge's own calls, apart from the run's tokens and cost above, at the judge model's " +
+      `list prices (${PRICING_SOURCE}). The fake judge makes no call and costs 0.`,
+    '',
+    table(
+      ['Judged', 'Input', 'Cache write', 'Cache read', 'Output', 'Total USD'],
+      [
+        ['this run', ...tokenCells(run)],
+        ['calibration set', ...tokenCells(calibration.summary)],
+      ],
+    ),
+    '',
+  ];
 }

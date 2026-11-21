@@ -4,10 +4,18 @@
  *   npm run eval -- --provider fake            # the keyword baseline (the default)
  *   npm run eval -- --provider oracle          # ground truth: every metric should be perfect
  *   EVAL_REAL_CALLS=1 ANTHROPIC_API_KEY=... npm run eval -- --provider anthropic --effort low
+ *   npm run eval -- --judge fake               # judge the summaries (off by default)
+ *   EVAL_REAL_CALLS=1 ANTHROPIC_API_KEY=... npm run eval -- --judge anthropic
+ *
+ * With `--judge`, the run's summaries and the hand-scored calibration set are judged, and the
+ * report adds the judge's scores, its agreement with the hand scores, and its own cost. The real
+ * judge (`anthropic`) is behind the same guard as a real provider.
  *
  * Output goes to `apps/api/.evals/` (gitignored): `runs/<time>-<provider>/` holds `report.md`,
  * `report.json`, `results.jsonl` (one scored outcome per case and rep), and `errors.jsonl` (the
- * infrastructure-error sidecar). Real-provider outcomes are cached in `cache/`; the local
+ * infrastructure-error sidecar), and with `--judge`, `judgments.jsonl`, `calibration.jsonl`, and
+ * `judge-errors.jsonl`. Real-provider outcomes are cached in `cache/` and real verdicts in
+ * `judge-cache/`; the local
  * providers are free and deterministic, so they always run fresh (a cache would hide code
  * changes). The script doesn't load `.env`: real calls take variables set for the run itself.
  */
@@ -17,14 +25,29 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { DEFAULT_TRIAGE_MODELS } from '../src/config.js';
+import type { CreateMessage } from '../src/triage/messages-model.js';
 import { FakeTriageModel } from '../src/triage/fake-model.js';
 import { TRIAGE_EFFORTS, type TriageEffort, type TriageModel } from '../src/triage/model.js';
 import { PROMPT_VERSION, PROMPT_VERSIONS, type PromptVersion } from '../src/triage/prompt.js';
 import { createTriageModel } from '../src/triage/providers.js';
 import { nullModel, oracleModel } from './baselines.js';
 import { loadFixtures, type Fixture } from './cases.js';
-import { checkRealCalls, isEvalProvider, type EvalProvider } from './guard.js';
-import { buildReport, renderMarkdown, summarize } from './report.js';
+import { calibrationItems, calibrationResult, loadCalibration } from './calibration.js';
+import {
+  checkRealCalls,
+  isEvalProvider,
+  isJudgeKind,
+  JUDGE_KINDS,
+  type EvalProvider,
+} from './guard.js';
+import {
+  createSummaryJudge,
+  itemsFromRun,
+  judgeConfigOf,
+  judgeItems,
+  summarizeJudging,
+} from './judging.js';
+import { buildReport, judgeNotice, renderMarkdown, summarize, type JudgeReport } from './report.js';
 import { runEval, type RunConfig } from './runner.js';
 
 export const DEFAULT_OUT_DIR = fileURLToPath(new URL('../.evals/', import.meta.url));
@@ -37,6 +60,8 @@ export interface CliDeps {
   /** Builds a real provider's model. Only called after the guard allows it. */
   createModel?: typeof createTriageModel;
   fixtures?: readonly Fixture[];
+  /** Replaces the real judge's SDK call. Only used after the guard allows a real judge. */
+  createJudgeMessage?: CreateMessage;
   now?: () => Date;
   log?: (line: string) => void;
 }
@@ -78,6 +103,7 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
       concurrency: { type: 'string', default: '4' },
       out: { type: 'string', default: DEFAULT_OUT_DIR },
       'no-cache': { type: 'boolean', default: false },
+      judge: { type: 'string' },
     },
     strict: true,
   });
@@ -94,6 +120,21 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
   const guard = checkRealCalls(provider, deps.env);
   if (!guard.allowed) {
     return fail(guard.reason);
+  }
+  const judgeKind = values.judge;
+  if (judgeKind !== undefined && !isJudgeKind(judgeKind)) {
+    return fail(`--judge must be one of ${JUDGE_KINDS.join(', ')}`);
+  }
+  // The judge's guard, also before anything is built or run.
+  const created =
+    judgeKind === undefined
+      ? undefined
+      : createSummaryJudge(judgeKind, deps.env, {
+          ...(deps.createJudgeMessage && { createMessage: deps.createJudgeMessage }),
+          timeoutMs: MODEL_TIMEOUT_MS,
+        });
+  if (created && 'refused' in created) {
+    return fail(created.refused);
   }
   const effort = values.effort;
   if (!(TRIAGE_EFFORTS as readonly string[]).includes(effort)) {
@@ -178,12 +219,46 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
         summarize(name === 'fake' ? 'fake (keyword baseline)' : name, result, fixtures),
       );
     }
+    let judged: { report: JudgeReport; rows: Record<string, readonly unknown[]> } | undefined;
+    if (created && judgeKind !== undefined) {
+      const { judge } = created;
+      const judgeConfig = judgeConfigOf(judgeKind, judge);
+      const judgeCacheDir =
+        judgeKind === 'fake' || values['no-cache'] ? undefined : join(outDir, 'judge-cache');
+      const options = {
+        judge,
+        config: judgeConfig,
+        ...(judgeCacheDir !== undefined && { cacheDir: judgeCacheDir }),
+        concurrency: judgeKind === 'fake' ? 1 : concurrency,
+        signal: abort.signal,
+      };
+      const fromRun = itemsFromRun(run, fixtures);
+      const runJudged = await judgeItems({ ...options, ...fromRun });
+      const set = loadCalibration(fixtures);
+      const setJudged = await judgeItems({ ...options, items: calibrationItems(set, fixtures) });
+      const runSummary = summarizeJudging(runJudged);
+      const result = calibrationResult(set, setJudged);
+      judged = {
+        report: {
+          notice: judgeNotice(runSummary, result),
+          run: runSummary,
+          calibration: { summary: summarizeJudging(setJudged), result },
+        },
+        rows: {
+          'judgments.jsonl': runJudged.results,
+          'calibration.jsonl': setJudged.results,
+          'judge-errors.jsonl': [...runJudged.errors, ...setJudged.errors],
+        },
+      };
+    }
+
     const now = (deps.now ?? (() => new Date()))();
     const report = buildReport(
       summarize(`${provider} (this run)`, run, fixtures),
       baselines,
       fixtures,
       now,
+      judged?.report,
     );
 
     const runDir = join(outDir, 'runs', `${now.toISOString().replaceAll(':', '-')}-${provider}`);
@@ -194,13 +269,28 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
     writeFileSync(join(runDir, 'report.md'), renderMarkdown(report));
     writeFileSync(join(runDir, 'results.jsonl'), jsonl(run.results));
     writeFileSync(join(runDir, 'errors.jsonl'), jsonl(run.errors));
+    for (const [name, rows] of Object.entries(judged?.rows ?? {})) {
+      writeFileSync(join(runDir, name), jsonl(rows));
+    }
 
     const s = report.run;
     log(
       `eval: ${provider}: ${s.scored} scored (${s.answered} answered, ${s.refused} refused, ` +
         `${s.invalid} invalid, ${s.cached} from cache), ${s.infraErrors} infrastructure errors`,
     );
+    if (judged) {
+      const j = judged.report;
+      log(
+        `eval: judge ${j.run.config.model}: ${j.run.judged} summaries judged, ` +
+          `${j.calibration.result.judged} of ${j.calibration.result.items} calibration items`,
+      );
+    }
     log(`eval: report in ${runDir}`);
+    const judgeErrors = judged?.rows['judge-errors.jsonl']?.length ?? 0;
+    if (judgeErrors > 0) {
+      log('eval: some judge calls failed for infrastructure reasons (see judge-errors.jsonl)');
+      return 1;
+    }
     if (run.errors.length > 0) {
       log(
         'eval: some cases failed for infrastructure reasons (see errors.jsonl); rerun to retry them',
