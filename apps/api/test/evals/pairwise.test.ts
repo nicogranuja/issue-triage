@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { describe, expect, it, vi } from 'vitest';
 
-import { JUDGE_MODEL, JudgeError } from '../../evals/judge.js';
+import { JUDGE_MODEL, JudgeError, NO_JUDGE_USAGE } from '../../evals/judge.js';
 import {
   comparePair,
   FakePairwiseJudge,
@@ -12,7 +12,6 @@ import {
   type Preference,
 } from '../../evals/pairwise.js';
 import type { CreateMessage } from '../../src/triage/messages-model.js';
-import { NO_JUDGE_USAGE } from '../../evals/judge.js';
 
 const signal = new AbortController().signal;
 const pair = {
