@@ -43,12 +43,36 @@ export interface TokenUsage {
   cacheCreationInputTokens: number;
 }
 
+/**
+ * The tokens one model used. Each model bills at its own rates, so a request that fell back to
+ * another model is priced per model, not at the requested model's rates.
+ */
+export interface ModelUsage {
+  model: string;
+  usage: TokenUsage;
+}
+
 export interface TriageResult {
   suggestion: TriageSuggestion;
   /** The model that produced the suggestion, as reported by the provider. */
   model: string;
-  /** Summed over all model calls for this suggestion. */
+  /**
+   * Summed over all model calls for this suggestion, from each response's top-level `usage`. With
+   * a server-side fallback, that covers only the attempt that answered; `usageByModel` has all of
+   * them.
+   */
   usage: TokenUsage;
+  /**
+   * Every attempt's tokens, by model, summed over calls: from `usage.iterations` where the
+   * provider reports it (declined attempts and fallbacks included), else the top-level usage.
+   * Optional: providers with no per-attempt accounting leave it out, and `usage` is the total.
+   */
+  usageByModel?: ModelUsage[];
+  /**
+   * Whether a server-side fallback model answered any call (a `fallback_message` entry in
+   * `usage.iterations`). Optional: absent means the provider can't tell.
+   */
+  fallback?: boolean;
   /** 1, or 2 when the first output failed validation and the model was asked to correct it. */
   modelCalls: number;
   /** Time spent waiting for the model, summed over calls. */
@@ -107,23 +131,29 @@ export class TriageModelError extends Error {
 export class InvalidModelOutputError extends TriageModelError {
   override name = 'InvalidModelOutputError';
   readonly problems: readonly string[];
+  /** What the failed calls used, for cost accounting. Absent when the provider didn't say. */
+  readonly usageByModel: readonly ModelUsage[] | undefined;
 
-  constructor(problems: readonly string[]) {
+  constructor(problems: readonly string[], usageByModel?: readonly ModelUsage[]) {
     // The problems quote the output (an unknown label, say), so logs only get their count.
     super(`Model output failed validation after a retry: ${problems.join('; ')}`, {
       retryable: false,
       logMessage: `Model output failed validation after a retry (${problems.length} problems)`,
     });
     this.problems = problems;
+    this.usageByModel = usageByModel;
   }
 }
 
 /** The model declined the request (`stop_reason: refusal`). Retrying the same input won't help. */
 export class ModelRefusalError extends TriageModelError {
   override name = 'ModelRefusalError';
+  /** What the declined calls used, for cost accounting. Absent when the provider didn't say. */
+  readonly usageByModel: readonly ModelUsage[] | undefined;
 
-  constructor(category: string | null) {
+  constructor(category: string | null, usageByModel?: readonly ModelUsage[]) {
     const message = `The model declined to triage this issue (category: ${category ?? 'unspecified'})`;
     super(message, { retryable: false, logMessage: message });
+    this.usageByModel = usageByModel;
   }
 }

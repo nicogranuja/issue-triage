@@ -125,6 +125,19 @@ describe('MessagesTriageModel', () => {
         cacheReadInputTokens: 800,
         cacheCreationInputTokens: 0,
       },
+      // No `usage.iterations` in the response: the top-level usage is the whole call.
+      usageByModel: [
+        {
+          model: 'claude-opus-5-5',
+          usage: {
+            inputTokens: 1200,
+            outputTokens: 300,
+            cacheReadInputTokens: 800,
+            cacheCreationInputTokens: 0,
+          },
+        },
+      ],
+      fallback: false,
       modelCalls: 1,
       latencyMs: 250,
     });
@@ -215,6 +228,81 @@ describe('MessagesTriageModel', () => {
       model: 'claude-opus-4-8',
       modelCalls: 1,
     });
+  });
+
+  it('counts every attempt from usage.iterations, by model, and flags the fallback', async () => {
+    const iteration = (model: string, input: number, output: number, type = 'message') => ({
+      type,
+      model,
+      input_tokens: input,
+      output_tokens: output,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 100,
+      cache_creation: null,
+    });
+    const fellBack = reply(valid, { model: 'claude-opus-4-8' });
+    // Top-level usage covers only the answering attempt; the declined one is in iterations.
+    fellBack.usage = {
+      ...fellBack.usage,
+      input_tokens: 1000,
+      output_tokens: 400,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 100,
+      iterations: [
+        iteration('claude-opus-5-5', 1000, 20),
+        iteration('claude-opus-4-8', 1000, 400, 'fallback_message'),
+      ],
+    } as Message['usage'];
+    const { suggest } = setup(fellBack);
+
+    const result = await suggest();
+
+    expect(result.fallback).toBe(true);
+    expect(result.usage).toMatchObject({ inputTokens: 1000, outputTokens: 400 });
+    expect(result.usageByModel).toEqual([
+      {
+        model: 'claude-opus-5-5',
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 20,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 100,
+        },
+      },
+      {
+        model: 'claude-opus-4-8',
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 400,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 100,
+        },
+      },
+    ]);
+  });
+
+  it('keeps the usage of calls that ended in a refusal or invalid output', async () => {
+    const refusal = {
+      ...reply('', { stop_reason: 'refusal', content: [] }),
+      stop_details: { type: 'refusal', category: 'cyber', explanation: null },
+    } as unknown as Message;
+    const refused = await rejection(setup(refusal).suggest());
+    expect((refused as ModelRefusalError).usageByModel).toEqual([
+      {
+        model: 'claude-opus-5-5',
+        usage: expect.objectContaining({ inputTokens: 1200 }) as unknown,
+      },
+    ]);
+
+    const invalid = await rejection(
+      setup(reply(withForeignLabel), reply(withForeignLabel)).suggest(),
+    );
+    expect((invalid as InvalidModelOutputError).usageByModel).toEqual([
+      {
+        model: 'claude-opus-5-5',
+        usage: expect.objectContaining({ inputTokens: 2400 }) as unknown,
+      },
+    ]);
   });
 
   describe('provider errors', () => {
