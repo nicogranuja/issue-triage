@@ -11,6 +11,10 @@
  *   shell inherits your credentials, so a real, billed run has to be started by you, in your own
  *   terminal.
  * - `fake`, `oracle`, and `null` run locally and need nothing.
+ *
+ * The summary judge (`--judge`) goes through the same gate: `--judge anthropic` is a real, billed
+ * call to the Anthropic API whatever the provider under test is, so it needs the same opt-in and
+ * key, and is refused in the same places. `--judge fake` is a local keyword rule.
  */
 export const LOCAL_EVAL_PROVIDERS = ['fake', 'oracle', 'null'] as const;
 export const REAL_EVAL_PROVIDERS = ['anthropic', 'bedrock'] as const;
@@ -75,6 +79,47 @@ export function checkRealCalls(
       reason:
         '--provider bedrock uses whatever AWS credentials the shell has, so it also needs ' +
         'EVAL_ALLOW_BEDROCK=1 (EVAL_REAL_CALLS=1 is not enough).',
+    };
+  }
+  return { allowed: true };
+}
+
+export const JUDGE_KINDS = ['fake', 'anthropic'] as const;
+export type JudgeKind = (typeof JUDGE_KINDS)[number];
+
+export function isJudgeKind(value: string): value is JudgeKind {
+  return (JUDGE_KINDS as readonly string[]).includes(value);
+}
+
+/** The real-call guard for the summary judge: the same rules as `--provider anthropic`. */
+export function checkRealJudge(
+  kind: JudgeKind,
+  env: Readonly<Record<string, string | undefined>>,
+): GuardResult {
+  if (kind === 'fake') {
+    return { allowed: true };
+  }
+  const blocked = blockedEnvironment(env);
+  if (blocked) {
+    return {
+      allowed: false,
+      reason:
+        `Refusing to run the ${kind} judge from ${blocked}. Use --judge fake, or start the ` +
+        'real run yourself in your own terminal.',
+    };
+  }
+  if (env.EVAL_REAL_CALLS !== '1') {
+    return {
+      allowed: false,
+      reason:
+        `--judge ${kind} makes real, billed model calls. Set EVAL_REAL_CALLS=1 to allow them, ` +
+        'with ANTHROPIC_API_KEY set.',
+    };
+  }
+  if (!env.ANTHROPIC_API_KEY) {
+    return {
+      allowed: false,
+      reason: `--judge ${kind} needs ANTHROPIC_API_KEY set (EVAL_REAL_CALLS=1 is not enough).`,
     };
   }
   return { allowed: true };

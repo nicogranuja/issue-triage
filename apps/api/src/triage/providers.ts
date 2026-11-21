@@ -18,7 +18,7 @@ const ANTHROPIC_REQUEST_EXTRAS: Partial<Anthropic.Beta.MessageCreateParamsNonStr
 };
 
 /** The SDK's own retries for 429s, 5xx, and connection errors, before the job queue's. */
-const SDK_MAX_RETRIES = 2;
+export const SDK_MAX_RETRIES = 2;
 
 /**
  * The SDK emits a span per API call once a tracer provider is registered. Its spans carry only

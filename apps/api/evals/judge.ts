@@ -12,13 +12,14 @@
  * - It runs on one fixed model, with no refusal fallback: a score from a different model than the
  *   one configured is rejected, so a fallback can't silently mix two judges in one report.
  *
- * Not yet: a hand-scored calibration set with judge-human agreement, and a pairwise mode run in
- * both orders. Until the calibration exists, judge scores are unvalidated.
+ * `calibration.ts` measures how far the judge agrees with hand scores; a judge is only as good
+ * as that agreement, and the fake judge's agreement means nothing.
  */
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 
 import type { CreateMessage } from '../src/triage/messages-model.js';
+import type { TokenUsage } from '../src/triage/model.js';
 import { MAX_BODY_CHARS } from '../src/triage/prompt.js';
 
 /** The judge model and effort the handoff fixed: a different model from the one under test. */
@@ -52,6 +53,8 @@ export interface JudgeResult {
   /** The model that answered: always the configured judge model. */
   model: string;
   promptVersion: string;
+  /** What the judge call used. Zero for the fake judge. */
+  usage: TokenUsage;
 }
 
 export interface SummaryJudge {
@@ -63,7 +66,32 @@ export interface SummaryJudge {
 /** The judge declined, answered from another model, or returned output that fails the schema. */
 export class JudgeError extends Error {
   override name = 'JudgeError';
+  /** What the failed call used: a refusal or an unusable reply is billed too. */
+  readonly usage: TokenUsage | null;
+
+  constructor(message: string, usage: TokenUsage | null = null) {
+    super(message);
+    this.usage = usage;
+  }
 }
+
+export const NO_JUDGE_USAGE: TokenUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+};
+
+/**
+ * The call's tokens. No fallback is requested and a fallback answer is rejected, so the top-level
+ * usage is the whole call.
+ */
+const usageOf = ({ usage }: Anthropic.Beta.BetaMessage): TokenUsage => ({
+  inputTokens: usage.input_tokens,
+  outputTokens: usage.output_tokens,
+  cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
+  cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
+});
 
 const INSTRUCTIONS_V1 = `You grade one summary of a GitHub issue, written for a maintainer who will read the summary instead of the issue. Score it on three criteria, each from 1 to 5, using the anchors below, and give a one- or two-sentence rationale for each score that points to specific content.
 
@@ -179,29 +207,36 @@ export class MessagesSummaryJudge implements SummaryJudge {
       },
       { signal },
     );
+    const usage = usageOf(response);
     if (response.stop_reason === 'refusal') {
       throw new JudgeError(
         `The judge declined (category: ${response.stop_details?.category ?? 'unspecified'})`,
+        usage,
       );
     }
     const fellBack = (response.usage.iterations ?? []).some((e) => e.type === 'fallback_message');
     if (response.model !== this.modelId || fellBack) {
-      throw new JudgeError(`The judge answered from ${response.model}, not ${this.modelId}`);
+      throw new JudgeError(`The judge answered from ${response.model}, not ${this.modelId}`, usage);
     }
     if (response.stop_reason === 'max_tokens') {
-      throw new JudgeError('The judge reply was cut off at the output limit');
+      throw new JudgeError('The judge reply was cut off at the output limit', usage);
     }
     let json: unknown;
     try {
       json = JSON.parse(replyText(response.content));
     } catch {
-      throw new JudgeError('The judge reply is not JSON');
+      throw new JudgeError('The judge reply is not JSON', usage);
     }
     const parsed = verdictSchema.safeParse(json);
     if (!parsed.success) {
-      throw new JudgeError(`The judge reply fails the schema: ${parsed.error.message}`);
+      throw new JudgeError(`The judge reply fails the schema: ${parsed.error.message}`, usage);
     }
-    return { verdict: parsed.data, model: response.model, promptVersion: this.promptVersion };
+    return {
+      verdict: parsed.data,
+      model: response.model,
+      promptVersion: this.promptVersion,
+      usage,
+    };
   }
 }
 
@@ -234,6 +269,7 @@ export class FakeSummaryJudge implements SummaryJudge {
       },
       model: this.modelId,
       promptVersion: this.promptVersion,
+      usage: NO_JUDGE_USAGE,
     });
   }
 }

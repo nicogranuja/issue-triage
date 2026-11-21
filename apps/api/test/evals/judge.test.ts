@@ -102,6 +102,12 @@ describe('MessagesSummaryJudge', () => {
       verdict,
       model: JUDGE_MODEL,
       promptVersion: JUDGE_PROMPT_VERSION,
+      usage: {
+        inputTokens: 900,
+        outputTokens: 200,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
     });
     const params = createMessage.mock.calls[0]?.[0];
     expect(params?.model).toBe('claude-sonnet-5-5');
@@ -134,6 +140,8 @@ describe('MessagesSummaryJudge', () => {
       } as Message['stop_details'],
     });
     await expect(setup(refusal).run()).rejects.toThrow(/declined/);
+    // A declined call is billed, so the error keeps its tokens.
+    await expect(setup(refusal).run()).rejects.toMatchObject({ usage: { inputTokens: 900 } });
     await expect(setup(reply('{"faith', { stop_reason: 'max_tokens' })).run()).rejects.toThrow(
       /cut off/,
     );
