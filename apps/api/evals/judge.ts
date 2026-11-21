@@ -193,50 +193,69 @@ export class MessagesSummaryJudge implements SummaryJudge {
   }
 
   async judge(input: JudgeInput, { signal }: { signal: AbortSignal }): Promise<JudgeResult> {
-    const { system, user } = judgePrompt(input);
-    const response = await this.#createMessage(
-      {
-        model: this.modelId,
-        max_tokens: 16_000,
-        output_config: {
-          effort: JUDGE_EFFORT,
-          format: { type: 'json_schema', schema: verdictJsonSchema },
-        },
-        system,
-        messages: [{ role: 'user', content: user }],
-      },
-      { signal },
-    );
-    const usage = usageOf(response);
-    if (response.stop_reason === 'refusal') {
-      throw new JudgeError(
-        `The judge declined (category: ${response.stop_details?.category ?? 'unspecified'})`,
-        usage,
-      );
-    }
-    const fellBack = (response.usage.iterations ?? []).some((e) => e.type === 'fallback_message');
-    if (response.model !== this.modelId || fellBack) {
-      throw new JudgeError(`The judge answered from ${response.model}, not ${this.modelId}`, usage);
-    }
-    if (response.stop_reason === 'max_tokens') {
-      throw new JudgeError('The judge reply was cut off at the output limit', usage);
-    }
-    let json: unknown;
-    try {
-      json = JSON.parse(replyText(response.content));
-    } catch {
-      throw new JudgeError('The judge reply is not JSON', usage);
-    }
+    const { json, usage, model } = await askJudge({
+      createMessage: this.#createMessage,
+      modelId: this.modelId,
+      ...judgePrompt(input),
+      schema: verdictJsonSchema,
+      signal,
+    });
     const parsed = verdictSchema.safeParse(json);
     if (!parsed.success) {
       throw new JudgeError(`The judge reply fails the schema: ${parsed.error.message}`, usage);
     }
-    return {
-      verdict: parsed.data,
-      model: response.model,
-      promptVersion: this.promptVersion,
+    return { verdict: parsed.data, model, promptVersion: this.promptVersion, usage };
+  }
+}
+
+/**
+ * One judge request: the fixed model at the judge effort, structured output, no fallback. Throws
+ * `JudgeError` for a refusal, an answer from another model, a cut-off reply, or one that isn't
+ * JSON; the caller checks the JSON against its own schema.
+ */
+export async function askJudge({
+  createMessage,
+  modelId,
+  system,
+  user,
+  schema,
+  signal,
+}: {
+  createMessage: CreateMessage;
+  modelId: string;
+  system: string;
+  user: string;
+  schema: Record<string, unknown>;
+  signal: AbortSignal;
+}): Promise<{ json: unknown; usage: TokenUsage; model: string }> {
+  const response = await createMessage(
+    {
+      model: modelId,
+      max_tokens: 16_000,
+      output_config: { effort: JUDGE_EFFORT, format: { type: 'json_schema', schema } },
+      system,
+      messages: [{ role: 'user', content: user }],
+    },
+    { signal },
+  );
+  const usage = usageOf(response);
+  if (response.stop_reason === 'refusal') {
+    throw new JudgeError(
+      `The judge declined (category: ${response.stop_details?.category ?? 'unspecified'})`,
       usage,
-    };
+    );
+  }
+  const fellBack = (response.usage.iterations ?? []).some((e) => e.type === 'fallback_message');
+  if (response.model !== modelId || fellBack) {
+    throw new JudgeError(`The judge answered from ${response.model}, not ${modelId}`, usage);
+  }
+  if (response.stop_reason === 'max_tokens') {
+    throw new JudgeError('The judge reply was cut off at the output limit', usage);
+  }
+  try {
+    return { json: JSON.parse(replyText(response.content)), usage, model: response.model };
+  } catch {
+    throw new JudgeError('The judge reply is not JSON', usage);
   }
 }
 
