@@ -8,6 +8,8 @@
  */
 import { labelKey, PRIORITIES, type Priority } from '@issue-triage/shared';
 
+import type { ModelUsage, TokenUsage } from '../src/triage/model.js';
+
 /** Precision, recall, and F1 from counts. Each is null when its denominator is 0. */
 export interface PrecisionRecall {
   truePositives: number;
@@ -414,5 +416,93 @@ export function latencyMetrics(latenciesMs: readonly number[]): LatencyMetrics {
     cases: latenciesMs.length,
     p50Ms: percentile(latenciesMs, 50),
     p95Ms: percentile(latenciesMs, 95),
+  };
+}
+
+export interface CostOutcome {
+  /**
+   * Every attempt's tokens by model. Null when the outcome didn't record them (a refusal or
+   * invalid output from a provider that doesn't say): the case is counted as missing.
+   */
+  usageByModel: readonly ModelUsage[] | null;
+}
+
+export interface CostMetrics {
+  /** Scored outcomes. */
+  cases: number;
+  /** Outcomes with no usage recorded: their tokens are in no figure. */
+  missingUsage: number;
+  /** Summed over every model and attempt. */
+  tokens: TokenUsage;
+  /** By model, in first-seen order, with that model's cost (null if unpriced). */
+  byModel: { model: string; usage: TokenUsage; usd: number | null }[];
+  /**
+   * Total cost in USD. Null when it can't be stated: a provider priced elsewhere (Bedrock), or a
+   * model missing from the pricing table. Local providers cost 0.
+   */
+  totalUsd: number | null;
+  /** `totalUsd` over scored outcomes. */
+  usdPerCase: number | null;
+  /** Why there is no total, when there isn't one. */
+  unpriced: string | null;
+}
+
+const ZERO_TOKENS: TokenUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+};
+
+const plus = (a: TokenUsage, b: TokenUsage): TokenUsage => ({
+  inputTokens: a.inputTokens + b.inputTokens,
+  outputTokens: a.outputTokens + b.outputTokens,
+  cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
+  cacheCreationInputTokens: a.cacheCreationInputTokens + b.cacheCreationInputTokens,
+});
+
+/**
+ * Tokens and cost over a run. Each model's tokens are priced at its own rates, so a fallback is
+ * charged as the fallback model. `pricing` is `local` for providers that make no model call
+ * (cost 0), `anthropic` for the API's list prices, and `elsewhere` for Bedrock.
+ */
+export function costMetrics(
+  outcomes: readonly CostOutcome[],
+  pricing: 'local' | 'anthropic' | 'elsewhere',
+  price: (model: string, usage: TokenUsage) => number | null,
+): CostMetrics {
+  const totals = new Map<string, TokenUsage>();
+  let missingUsage = 0;
+  for (const { usageByModel } of outcomes) {
+    if (usageByModel === null) {
+      missingUsage += 1;
+      continue;
+    }
+    for (const { model, usage } of usageByModel) {
+      totals.set(model, plus(totals.get(model) ?? ZERO_TOKENS, usage));
+    }
+  }
+  const byModel = [...totals].map(([model, usage]) => ({
+    model,
+    usage,
+    usd: pricing === 'local' ? 0 : pricing === 'anthropic' ? price(model, usage) : null,
+  }));
+  const unpricedModels = byModel.filter((entry) => entry.usd === null).map((e) => e.model);
+  const unpriced =
+    pricing === 'elsewhere'
+      ? 'priced by the provider, not in the pricing table'
+      : unpricedModels.length > 0
+        ? `no price for ${unpricedModels.join(', ')}`
+        : null;
+  const totalUsd =
+    unpriced !== null ? null : byModel.reduce((sum, entry) => sum + (entry.usd ?? 0), 0);
+  return {
+    cases: outcomes.length,
+    missingUsage,
+    tokens: byModel.reduce((sum, entry) => plus(sum, entry.usage), ZERO_TOKENS),
+    byModel,
+    totalUsd,
+    usdPerCase: totalUsd === null || outcomes.length === 0 ? null : totalUsd / outcomes.length,
+    unpriced,
   };
 }

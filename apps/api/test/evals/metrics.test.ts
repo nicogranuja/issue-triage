@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { nullModel, oracleModel } from '../../evals/baselines.js';
 import { loadFixtures, triageInputFor } from '../../evals/cases.js';
 import {
+  costMetrics,
   duplicateMetrics,
   injectionMetrics,
   labelMetrics,
@@ -14,6 +15,7 @@ import {
   refusalMetrics,
   validityMetrics,
 } from '../../evals/metrics.js';
+import { costUsd } from '../../evals/pricing.js';
 import { outputContext, suggestionSchema } from '../../src/triage/output.js';
 
 describe('labelMetrics', () => {
@@ -286,5 +288,68 @@ describe('latency percentiles', () => {
 
   it('reports p50 and p95', () => {
     expect(latencyMetrics([300, 100, 200])).toEqual({ cases: 3, p50Ms: 200, p95Ms: 300 });
+  });
+});
+
+describe('tokens and cost', () => {
+  const tokens = (input: number, output: number, cacheRead = 0, cacheWrite = 0) => ({
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadInputTokens: cacheRead,
+    cacheCreationInputTokens: cacheWrite,
+  });
+
+  it('prices each of the four token counts at its own rate', () => {
+    // Opus 5.5: $4 in, $5 5-minute cache write, $0.20 cache read, $20 out, per million tokens.
+    expect(costUsd('claude-opus-5-5', tokens(1_000_000, 0))).toBe(4);
+    expect(costUsd('claude-opus-5-5', tokens(0, 1_000_000))).toBe(20);
+    expect(costUsd('claude-opus-5-5', tokens(0, 0, 1_000_000))).toBeCloseTo(0.2);
+    expect(costUsd('claude-opus-5-5', tokens(0, 0, 0, 1_000_000))).toBe(5);
+    expect(costUsd('claude-sonnet-5-5', tokens(1000, 500, 2000, 100))).toBeCloseTo(
+      (1000 * 2 + 500 * 10 + 2000 * 0.1 + 100 * 2.5) / 1e6,
+    );
+    expect(costUsd('claude-unknown', tokens(1, 1))).toBeNull();
+  });
+
+  it('sums every attempt and prices a fallback at the fallback model', () => {
+    const metrics = costMetrics(
+      [
+        {
+          usageByModel: [
+            { model: 'claude-opus-5-5', usage: tokens(1000, 10) },
+            { model: 'claude-opus-4-8', usage: tokens(1000, 400) },
+          ],
+        },
+        { usageByModel: [{ model: 'claude-opus-5-5', usage: tokens(2000, 300, 500) }] },
+        { usageByModel: null },
+      ],
+      'anthropic',
+      costUsd,
+    );
+    const opus55 = (3000 * 4 + 310 * 20 + 500 * 0.2) / 1e6;
+    const opus48 = (1000 * 5 + 400 * 25) / 1e6;
+    expect(metrics.tokens).toEqual(tokens(4000, 710, 500));
+    expect(metrics.byModel.map((entry) => entry.model)).toEqual([
+      'claude-opus-5-5',
+      'claude-opus-4-8',
+    ]);
+    expect(metrics.totalUsd).toBeCloseTo(opus55 + opus48);
+    expect(metrics.usdPerCase).toBeCloseTo((opus55 + opus48) / 3);
+    expect(metrics.missingUsage).toBe(1);
+    expect(metrics.unpriced).toBeNull();
+  });
+
+  it('gives no total rather than a wrong one for an unpriced model or provider', () => {
+    const outcomes = [{ usageByModel: [{ model: 'claude-mystery', usage: tokens(10, 10) }] }];
+    expect(costMetrics(outcomes, 'anthropic', costUsd)).toMatchObject({
+      totalUsd: null,
+      unpriced: 'no price for claude-mystery',
+    });
+    expect(costMetrics(outcomes, 'elsewhere', costUsd)).toMatchObject({ totalUsd: null });
+  });
+
+  it('costs nothing on a local provider', () => {
+    const outcomes = [{ usageByModel: [{ model: 'fake-triage-model', usage: tokens(0, 0) }] }];
+    expect(costMetrics(outcomes, 'local', costUsd)).toMatchObject({ totalUsd: 0, usdPerCase: 0 });
   });
 });

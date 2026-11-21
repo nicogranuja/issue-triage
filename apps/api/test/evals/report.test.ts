@@ -117,3 +117,29 @@ describe('refusals and fallbacks in the report', () => {
     });
   });
 });
+
+describe('tokens and cost in the report', () => {
+  it('reports zero cost for the local providers, and a total for priced usage', async () => {
+    expect((await summary('oracle', oracleModel(fixtures))).cost).toMatchObject({
+      totalUsd: 0,
+      missingUsage: 0,
+    });
+
+    const usage = {
+      inputTokens: 1000,
+      outputTokens: 100,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    };
+    const priced = scripted((_number, result) => ({
+      ...result,
+      model: 'claude-sonnet-5-5',
+      usage,
+      usageByModel: [{ model: 'claude-sonnet-5-5', usage }],
+    }));
+    const run = await runEval({ fixtures, model: priced, config: config('anthropic') });
+    const { cost, scored } = summarize('priced', run, fixtures);
+    expect(cost.totalUsd).toBeCloseTo((scored * (1000 * 2 + 100 * 10)) / 1e6);
+    expect(cost.tokens.inputTokens).toBe(scored * 1000);
+  });
+});

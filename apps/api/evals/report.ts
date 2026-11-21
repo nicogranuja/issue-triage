@@ -10,7 +10,10 @@
 import type { Priority } from '@issue-triage/shared';
 
 import { candidatesFor, type EvalCase, type Fixture } from './cases.js';
+import { LOCAL_EVAL_PROVIDERS } from './guard.js';
 import {
+  costMetrics,
+  type CostMetrics,
   duplicateMetrics,
   INJECTION_FIELDS,
   injectionMetrics,
@@ -29,7 +32,8 @@ import {
   type ValidityMetrics,
   validityMetrics,
 } from './metrics.js';
-import type { RunConfig, RunResult } from './runner.js';
+import { costUsd, PRICING_SOURCE } from './pricing.js';
+import type { RunConfig, RunResult, ScoredOutcome } from './runner.js';
 
 export interface RunSummary {
   name: string;
@@ -45,6 +49,7 @@ export interface RunSummary {
   validity: ValidityMetrics;
   refusals: RefusalMetrics;
   latency: LatencyMetrics;
+  cost: CostMetrics;
   labels: LabelMetrics;
   priority: PriorityMetrics;
   duplicates: DuplicateMetrics;
@@ -72,6 +77,21 @@ function expectedByCase(fixtures: readonly Fixture[]) {
     }
   }
   return expected;
+}
+
+/** Every attempt's tokens for an outcome, or null when it didn't record them. */
+function usageOf(outcome: ScoredOutcome) {
+  if (outcome.status === 'answered') {
+    return outcome.usageByModel ?? [{ model: outcome.model, usage: outcome.usage }];
+  }
+  return outcome.usageByModel ?? null;
+}
+
+function pricingFor(provider: string) {
+  if ((LOCAL_EVAL_PROVIDERS as readonly string[]).includes(provider)) {
+    return 'local';
+  }
+  return provider === 'anthropic' ? 'anthropic' : 'elsewhere';
 }
 
 export function summarize(name: string, run: RunResult, fixtures: readonly Fixture[]): RunSummary {
@@ -143,6 +163,11 @@ export function summarize(name: string, run: RunResult, fixtures: readonly Fixtu
         outcome.status === 'answered' ? [outcome.latencyMs] : [],
       ),
     ),
+    cost: costMetrics(
+      run.results.map(({ outcome }) => ({ usageByModel: usageOf(outcome) })),
+      pricingFor(run.config.provider),
+      costUsd,
+    ),
     labels,
     priority,
     duplicates: duplicateMetrics(duplicateOutcomes),
@@ -163,8 +188,6 @@ export interface Report {
   baselines: RunSummary[];
 }
 
-const LOCAL_PROVIDERS = new Set(['fake', 'oracle', 'null']);
-
 export function buildReport(
   run: RunSummary,
   baselines: RunSummary[],
@@ -172,7 +195,7 @@ export function buildReport(
   now: Date = new Date(),
 ): Report {
   const cases = fixtures.reduce((total, fixture) => total + fixture.cases.length, 0);
-  const notice = LOCAL_PROVIDERS.has(run.config.provider)
+  const notice = (LOCAL_EVAL_PROVIDERS as readonly string[]).includes(run.config.provider)
     ? `Illustrative only: this run used the local "${run.config.provider}" provider, not a language model. ` +
       'It shows what the report looks like and checks the harness; it is not a measurement of triage quality.'
     : `Results from a real model on ${cases} cases. Small sample: differences of a few cases are ` +
@@ -187,6 +210,7 @@ export function buildReport(
 }
 
 const fmt = (value: number | null) => (value === null ? 'n/a' : value.toFixed(3));
+const usd = (value: number) => '$' + value.toFixed(4);
 const pct = (count: number, total: number) =>
   total === 0 ? 'n/a' : `${((100 * count) / total).toFixed(1)}%`;
 
@@ -262,6 +286,36 @@ export function renderMarkdown(report: Report): string {
         String(s.latency.cases),
         s.latency.p50Ms === null ? 'n/a' : String(s.latency.p50Ms),
         s.latency.p95Ms === null ? 'n/a' : String(s.latency.p95Ms),
+      ]),
+    ),
+    '',
+    '## Tokens and cost',
+    '',
+    'Every attempt is counted, from `usage.iterations`: a declined attempt and the fallback that ' +
+      "answered, each at its own model's rates, and the tokens of refused and invalid cases. " +
+      `List prices from ${PRICING_SOURCE}, cache writes at the 5-minute rate. Bedrock is priced ` +
+      'separately and shows no cost. Local providers make no model call and cost 0.',
+    '',
+    table(
+      [
+        'Run',
+        'Input',
+        'Cache write',
+        'Cache read',
+        'Output',
+        'Total USD',
+        'USD per case',
+        'No usage',
+      ],
+      all.map((s) => [
+        s.name,
+        String(s.cost.tokens.inputTokens),
+        String(s.cost.tokens.cacheCreationInputTokens),
+        String(s.cost.tokens.cacheReadInputTokens),
+        String(s.cost.tokens.outputTokens),
+        s.cost.totalUsd === null ? `n/a (${s.cost.unpriced ?? 'unknown'})` : usd(s.cost.totalUsd),
+        s.cost.usdPerCase === null ? 'n/a' : usd(s.cost.usdPerCase),
+        String(s.cost.missingUsage),
       ]),
     ),
     '',
