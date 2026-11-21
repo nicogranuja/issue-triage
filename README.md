@@ -370,7 +370,16 @@ a report from a local provider says at the top that it's illustrative, not a mea
   ([`pricing.ts`](apps/api/evals/pricing.ts)). Local providers cost 0. Bedrock (priced by AWS) and
   models missing from the table show no total rather than a wrong one.
 
-Next: an LLM judge for summaries, and paired comparisons between runs.
+Started, not yet in the report: an LLM judge for summaries
+([`judge.ts`](apps/api/evals/judge.ts)). It scores faithfulness, key-point coverage, and
+concision from 1 to 5 against written anchors, with a rationale for each, on
+`claude-sonnet-5-5` at effort `high` with a versioned prompt and no refusal fallback. It never
+sees the model or prompt version that wrote a summary, or the reference summary, and its rubric
+says length is not quality. It has only been run against a fake. Its scores mean nothing until a
+hand-scored calibration set shows how well it agrees with a person.
+
+Next: the calibration set and judge-human agreement, a pairwise judge mode run in both orders,
+wiring the judge into the report, and paired comparisons between runs.
 
 ## Tests and checks
 
