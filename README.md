@@ -328,7 +328,7 @@ EVAL_REAL_CALLS=1 ANTHROPIC_API_KEY=... npm run eval -- --provider anthropic --e
 ```
 
 Options: `--model`, `--effort`, `--prompt-version`, `--reps`, `--seed`, `--concurrency`,
-`--no-cache`, `--out`, and `--judge` (below). Each model gets exactly what the worker would send for the issue
+`--no-cache`, `--out`, `--fixtures` (another fixture directory, such as exported cases), and `--judge` (below). Each model gets exactly what the worker would send for the issue
 (`triageInputFor`), through the same `TriageModel` interface, and every answer is re-checked
 with the worker's `suggestionSchema`.
 
@@ -461,7 +461,27 @@ anything is built. Output goes to `.evals/comparisons/<time>-<a>-vs-<b>/`: `comp
   the format: the keyword baseline beats "no labels" on label F1, as a keyword rule should, and
   most other figures carry a warning. No comparison output is committed.
 
-Next: exporting reviewed cases.
+### Exporting reviewed cases
+
+```sh
+DATABASE_URL=postgres://... PRIORITY_LABELS='{"high":"P1"}' npm run eval -- export-reviews
+npm run eval -- --fixtures .evals/exported                  # evaluate on the exported cases
+```
+
+`export-reviews` ([`export-reviews.ts`](apps/api/evals/export-reviews.ts)) turns stored reviews
+into eval cases, one fixture per repository in `.evals/exported/` (gitignored). It reads the
+database (`DATABASE_URL`, or `PGLITE_DATA_DIR`) and nothing else. The gold labels are the
+review's labels that are in the repository's label set, minus the labels that stand for a
+priority (`PRIORITY_LABELS`); the gold priority is the review's. Duplicates and the reference
+summary are unknown, so exported cases are left out of duplicate metrics and aren't judged.
+Rejected reviews are skipped, the latest review of an issue wins, and the repository's other
+issues become the duplicate pool.
+
+**The bias.** An accepted review is the model's own answer, confirmed by someone who saw it
+first. Reviewers anchor on what they're shown, so exported cases favor the model and prompt that
+produced the suggestions, and a comparison of that model against another one on them isn't fair.
+Each case's notes record the model, prompt version, and whether the review accepted or edited,
+so the cases can be split by where they came from.
 
 ## Tests and checks
 
