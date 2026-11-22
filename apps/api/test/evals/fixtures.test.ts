@@ -17,7 +17,9 @@ describe('eval fixtures', () => {
 
   it('include every kind of hard case', () => {
     const tags = new Set(cases.flatMap(({ c }) => c.tags));
-    expect(CASE_TAGS.filter((tag) => !tags.has(tag))).toEqual([]);
+    // `exported` marks cases exported from reviews, which the hand-written set has none of.
+    expect(CASE_TAGS.filter((tag) => tag !== 'exported' && !tags.has(tag))).toEqual([]);
+    expect(tags.has('exported')).toBe(false);
     // Each injection case says what it tries to make the triage do.
     for (const { c } of cases.filter(({ c }) => c.tags.includes('injection'))) {
       expect(c.injection, c.id).toBeDefined();

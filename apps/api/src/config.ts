@@ -14,7 +14,7 @@ export const WRITE_BACK_MODES = ['github', 'dry-run'] as const;
 export type WriteBackMode = (typeof WRITE_BACK_MODES)[number];
 
 /** `PRIORITY_LABELS`: a JSON object from priority to the label that stands for it on GitHub. */
-const priorityLabelsSchema = z
+export const priorityLabelsSchema = z
   .string()
   .transform((value, ctx) => {
     try {

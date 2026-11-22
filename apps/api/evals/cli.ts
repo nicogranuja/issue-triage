@@ -1,6 +1,7 @@
 /**
  * `npm run eval`: runs one provider over the eval fixtures and writes a report.
  * `npm run eval -- compare`: compares two configurations case by case (see `compare-cli.ts`).
+ * `npm run eval -- export-reviews`: writes stored reviews out as eval cases (`export-reviews-cli.ts`).
  *
  *   npm run eval -- --provider fake            # the keyword baseline (the default)
  *   npm run eval -- --provider oracle          # ground truth: every metric should be perfect
@@ -34,6 +35,7 @@ import { createTriageModel } from '../src/triage/providers.js';
 import { nullModel, oracleModel } from './baselines.js';
 import { loadFixtures, type Fixture } from './cases.js';
 import { compareMain } from './compare-cli.js';
+import { exportReviewsMain } from './export-reviews-cli.js';
 import { calibrationItems, calibrationResult, loadCalibration } from './calibration.js';
 import {
   checkRealCalls,
@@ -149,6 +151,9 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
   if (argv[0] === 'compare') {
     return compareMain(argv.slice(1), deps);
   }
+  if (argv[0] === 'export-reviews') {
+    return exportReviewsMain(argv.slice(1), deps);
+  }
   const log =
     deps.log ??
     ((line: string) => {
@@ -167,6 +172,7 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
       out: { type: 'string', default: DEFAULT_OUT_DIR },
       'no-cache': { type: 'boolean', default: false },
       judge: { type: 'string' },
+      fixtures: { type: 'string' },
     },
     strict: true,
   });
@@ -219,7 +225,7 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
     return fail('--seed must be a whole number');
   }
 
-  const fixtures = deps.fixtures ?? loadFixtures();
+  const fixtures = deps.fixtures ?? loadFixtures(values.fixtures);
   const outDir = values.out;
   const built = await buildModel('--', choice, { reps, seed }, deps, fixtures);
   if ('error' in built) {

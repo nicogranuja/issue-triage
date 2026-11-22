@@ -36,6 +36,8 @@ export const CASE_TAGS = [
   'very-long',
   'non-english',
   'no-matching-label',
+  /** A case exported from a stored review (`export-reviews.ts`), not written by hand. */
+  'exported',
 ] as const;
 
 const labelSchema = z.object({ name: z.string().min(1), description: z.string().nullable() });
