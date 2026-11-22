@@ -13,7 +13,8 @@
  * - Evidence about real repositories. The cases are hand-written fixtures, not a sample of real
  *   issues; an interval says how much these cases would move if drawn again, nothing more.
  * - A significance test. No figure here is called significant. There is no correction for
- *   comparing many metrics at once: at 95%, one interval in twenty excludes 0 by chance alone.
+ *   comparing many metrics at once: where there is no real difference, about one 95% interval in
+ *   twenty still excludes 0.
  * - Trustworthy at small n: below `MIN_PAIRED_CASES` every metric carries a warning.
  */
 import { labelKey } from '@issue-triage/shared';
@@ -393,9 +394,9 @@ export function comparisonNotice(a: RunConfig, b: RunConfig, cases: number): str
   ];
   const base =
     `Paired comparison on ${cases} hand-written fixture cases, which are not a sample of real ` +
-    'repositories. Intervals say how much these cases would move if drawn again; no figure is a ' +
-    'significance test, and with several metrics at 95%, about one interval in twenty excludes 0 ' +
-    'by chance.';
+    'repositories. Intervals say how much a figure would move if cases like these were drawn ' +
+    'again; no figure is a significance test, and nothing corrects for comparing several metrics ' +
+    'at once: where there is no real difference, about one 95% interval in twenty still excludes 0.';
   if (local.length === 0) {
     return base;
   }

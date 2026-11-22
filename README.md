@@ -450,8 +450,8 @@ anything is built. Output goes to `.evals/comparisons/<time>-<a>-vs-<b>/`: `comp
   difference shown") or it has fewer than 30 paired cases. Below 30, one case moves a rate by more
   than 3 points and the percentile bootstrap's interval is known to be too narrow, so a small-n
   metric never gets a direction, only "too few cases to read". Nothing is called significant: there's
-  no correction for comparing several metrics at once (at 95%, about one interval in twenty
-  excludes 0 by chance), and the cases are hand-written fixtures, not a sample of real issues.
+  no correction for comparing several metrics at once (where there is no real difference, about
+  one 95% interval in twenty still excludes 0), and the cases are hand-written fixtures, not a sample of real issues.
 - **Pairwise judge.** With `--judge`, each case's two summaries go to the pairwise judge in both
   orders. The report gives A wins, B wins, ties (flips included), flips and the flip rate, and B's
   net preference per case (+1, 0, or -1) with its own interval. Identical summaries are ties
