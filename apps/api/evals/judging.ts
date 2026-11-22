@@ -43,6 +43,7 @@ import {
   type Verdict,
 } from './judge.js';
 import { costMetrics, type CostMetrics } from './metrics.js';
+import { FakePairwiseJudge, MessagesPairwiseJudge, type PairwiseJudge } from './pairwise.js';
 import { costUsd } from './pricing.js';
 import type { RunResult } from './runner.js';
 
@@ -82,17 +83,37 @@ export function createSummaryJudge(
   if (kind === 'fake') {
     return { judge: new FakeSummaryJudge() };
   }
-  let create = createMessage;
-  if (!create) {
-    // Reads ANTHROPIC_API_KEY, which the guard required. Never Bedrock: the judge is fixed.
-    const client = new Anthropic({
-      timeout: timeoutMs,
-      maxRetries: SDK_MAX_RETRIES,
-      openTelemetry: SDK_OPEN_TELEMETRY,
-    });
-    create = (params, options) => client.beta.messages.create(params, options);
+  return {
+    judge: new MessagesSummaryJudge({ createMessage: createMessage ?? sdkCall(timeoutMs) }),
+  };
+}
+
+/** The pairwise judge for `compare --judge`: the same guard, the same fixed judge model. */
+export function createPairwiseJudge(
+  kind: JudgeKind,
+  env: Readonly<Record<string, string | undefined>>,
+  { createMessage, timeoutMs = 60_000 }: { createMessage?: CreateMessage; timeoutMs?: number } = {},
+): { judge: PairwiseJudge } | { refused: string } {
+  const guard = checkRealJudge(kind, env);
+  if (!guard.allowed) {
+    return { refused: guard.reason };
   }
-  return { judge: new MessagesSummaryJudge({ createMessage: create }) };
+  if (kind === 'fake') {
+    return { judge: new FakePairwiseJudge() };
+  }
+  return {
+    judge: new MessagesPairwiseJudge({ createMessage: createMessage ?? sdkCall(timeoutMs) }),
+  };
+}
+
+/** The real SDK call. Reads ANTHROPIC_API_KEY, which the guard required. Never Bedrock. */
+function sdkCall(timeoutMs: number): CreateMessage {
+  const client = new Anthropic({
+    timeout: timeoutMs,
+    maxRetries: SDK_MAX_RETRIES,
+    openTelemetry: SDK_OPEN_TELEMETRY,
+  });
+  return (params, options) => client.beta.messages.create(params, options);
 }
 
 /** One summary to judge, and where it came from. The `where` never reaches the judge. */

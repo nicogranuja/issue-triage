@@ -1,5 +1,6 @@
 /**
  * `npm run eval`: runs one provider over the eval fixtures and writes a report.
+ * `npm run eval -- compare`: compares two configurations case by case (see `compare-cli.ts`).
  *
  *   npm run eval -- --provider fake            # the keyword baseline (the default)
  *   npm run eval -- --provider oracle          # ground truth: every metric should be perfect
@@ -32,6 +33,7 @@ import { PROMPT_VERSION, PROMPT_VERSIONS, type PromptVersion } from '../src/tria
 import { createTriageModel } from '../src/triage/providers.js';
 import { nullModel, oracleModel } from './baselines.js';
 import { loadFixtures, type Fixture } from './cases.js';
+import { compareMain } from './compare-cli.js';
 import { calibrationItems, calibrationResult, loadCalibration } from './calibration.js';
 import {
   checkRealCalls,
@@ -53,7 +55,7 @@ import { runEval, type RunConfig } from './runner.js';
 export const DEFAULT_OUT_DIR = fileURLToPath(new URL('../.evals/', import.meta.url));
 
 /** Per request to a real model, like the worker's default. */
-const MODEL_TIMEOUT_MS = 60_000;
+export const MODEL_TIMEOUT_MS = 60_000;
 
 export interface CliDeps {
   env: Readonly<Record<string, string | undefined>>;
@@ -66,14 +68,14 @@ export interface CliDeps {
   log?: (line: string) => void;
 }
 
-function localModel(provider: 'fake' | 'oracle' | 'null', fixtures: readonly Fixture[]) {
+export function localModel(provider: 'fake' | 'oracle' | 'null', fixtures: readonly Fixture[]) {
   if (provider === 'oracle') {
     return oracleModel(fixtures);
   }
   return provider === 'null' ? nullModel() : new FakeTriageModel();
 }
 
-function localConfig(provider: 'fake' | 'oracle' | 'null', model: TriageModel): RunConfig {
+export function localConfig(provider: 'fake' | 'oracle' | 'null', model: TriageModel): RunConfig {
   return {
     provider,
     model: model.modelId,
@@ -84,8 +86,69 @@ function localConfig(provider: 'fake' | 'oracle' | 'null', model: TriageModel): 
   };
 }
 
+/** One side of a run: a provider and how to call it, as given on the command line. */
+export interface ModelChoice {
+  provider: EvalProvider;
+  model: string | undefined;
+  effort: string;
+  promptVersion: string;
+}
+
+/** Checks a choice's effort and prompt version; `prefix` is `--` or a side's `--a-`. */
+export function choiceError(prefix: string, choice: ModelChoice): string | null {
+  if (!(TRIAGE_EFFORTS as readonly string[]).includes(choice.effort)) {
+    return `${prefix}effort must be one of ${TRIAGE_EFFORTS.join(', ')}`;
+  }
+  if (!(PROMPT_VERSIONS as readonly string[]).includes(choice.promptVersion)) {
+    return `${prefix}prompt-version must be one of ${PROMPT_VERSIONS.join(', ')}`;
+  }
+  return null;
+}
+
+/**
+ * Builds the model for a choice. Call only after `checkRealCalls` allowed its provider: a real
+ * provider's client is created here.
+ */
+export async function buildModel(
+  prefix: string,
+  choice: ModelChoice,
+  { reps, seed }: { reps: number; seed: number },
+  deps: CliDeps,
+  fixtures: readonly Fixture[],
+): Promise<{ model: TriageModel; config: RunConfig; isLocal: boolean } | { error: string }> {
+  const { provider } = choice;
+  if (provider === 'fake' || provider === 'oracle' || provider === 'null') {
+    const model = localModel(provider, fixtures);
+    return { model, config: { ...localConfig(provider, model), reps, seed }, isLocal: true };
+  }
+  const awsRegion = deps.env.AWS_REGION ?? deps.env.AWS_DEFAULT_REGION;
+  if (provider === 'bedrock' && !awsRegion) {
+    return { error: `${prefix}provider bedrock needs AWS_REGION` };
+  }
+  const model = await (deps.createModel ?? createTriageModel)({
+    provider,
+    model: choice.model ?? DEFAULT_TRIAGE_MODELS[provider],
+    effort: choice.effort as TriageEffort,
+    promptVersion: choice.promptVersion as PromptVersion,
+    modelTimeoutMs: MODEL_TIMEOUT_MS,
+    ...(awsRegion !== undefined && { awsRegion }),
+  });
+  const config: RunConfig = {
+    provider,
+    model: model.modelId,
+    effort: model.effort,
+    promptVersion: model.promptVersion,
+    reps,
+    seed,
+  };
+  return { model, config, isLocal: false };
+}
+
 /** Runs the CLI. Returns the exit code. */
 export async function main(argv: readonly string[], deps: CliDeps): Promise<number> {
+  if (argv[0] === 'compare') {
+    return compareMain(argv.slice(1), deps);
+  }
   const log =
     deps.log ??
     ((line: string) => {
@@ -136,13 +199,15 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
   if (created && 'refused' in created) {
     return fail(created.refused);
   }
-  const effort = values.effort;
-  if (!(TRIAGE_EFFORTS as readonly string[]).includes(effort)) {
-    return fail(`--effort must be one of ${TRIAGE_EFFORTS.join(', ')}`);
-  }
-  const promptVersion = values['prompt-version'];
-  if (!(PROMPT_VERSIONS as readonly string[]).includes(promptVersion)) {
-    return fail(`--prompt-version must be one of ${PROMPT_VERSIONS.join(', ')}`);
+  const choice = {
+    provider,
+    model: values.model,
+    effort: values.effort,
+    promptVersion: values['prompt-version'],
+  };
+  const invalid = choiceError('--', choice);
+  if (invalid) {
+    return fail(invalid);
   }
   const reps = Number(values.reps);
   const seed = Number(values.seed);
@@ -156,37 +221,11 @@ export async function main(argv: readonly string[], deps: CliDeps): Promise<numb
 
   const fixtures = deps.fixtures ?? loadFixtures();
   const outDir = values.out;
-  const isLocal = provider === 'fake' || provider === 'oracle' || provider === 'null';
-
-  let model: TriageModel;
-  let config: RunConfig;
-  if (isLocal) {
-    model = localModel(provider, fixtures);
-    config = { ...localConfig(provider, model), reps, seed };
-  } else {
-    const realProvider: Exclude<EvalProvider, 'fake' | 'oracle' | 'null'> = provider;
-    const awsRegion = deps.env.AWS_REGION ?? deps.env.AWS_DEFAULT_REGION;
-    if (realProvider === 'bedrock' && !awsRegion) {
-      return fail('--provider bedrock needs AWS_REGION');
-    }
-    const modelId = values.model ?? DEFAULT_TRIAGE_MODELS[realProvider];
-    model = await (deps.createModel ?? createTriageModel)({
-      provider: realProvider,
-      model: modelId,
-      effort: effort as TriageEffort,
-      promptVersion: promptVersion as PromptVersion,
-      modelTimeoutMs: MODEL_TIMEOUT_MS,
-      ...(awsRegion !== undefined && { awsRegion }),
-    });
-    config = {
-      provider,
-      model: model.modelId,
-      effort: model.effort,
-      promptVersion: model.promptVersion,
-      reps,
-      seed,
-    };
+  const built = await buildModel('--', choice, { reps, seed }, deps, fixtures);
+  if ('error' in built) {
+    return fail(built.error);
   }
+  const { model, config, isLocal } = built;
 
   const abort = new AbortController();
   const onSignal = () => {
