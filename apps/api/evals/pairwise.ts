@@ -11,7 +11,8 @@
  * and two summaries labeled only "A" and "B" (never which model or prompt version wrote them, nor
  * the reference summary), and the instructions say length is not quality.
  *
- * Not wired into the CLI yet: it needs two runs to compare, which is comparison mode's job.
+ * Reached from the CLI through comparison mode (`npm run eval -- compare ... --judge`), which has
+ * the two runs to compare.
  */
 import { z } from 'zod';
 

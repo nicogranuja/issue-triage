@@ -416,11 +416,52 @@ What the agreement figures do and don't show:
 
 A pairwise judge ([`pairwise.ts`](apps/api/evals/pairwise.ts)) compares two summaries of the same
 issue, asked once in each order: a win counts only when both orders agree, and an order flip
-counts as a tie (flips are also counted on their own). It isn't in the CLI yet: it needs two runs
-to compare.
+counts as a tie (flips are also counted on their own). It runs through comparison mode, below.
 
-Next: comparison mode between runs (a paired bootstrap, with the pairwise judge), and exporting
-reviewed cases.
+### Comparing two configurations
+
+```sh
+npm run eval -- compare --a null --b fake                 # illustrative: two local baselines
+npm run eval -- compare --a null --b fake --judge fake    # plus the judge plumbing
+EVAL_REAL_CALLS=1 ANTHROPIC_API_KEY=... npm run eval -- compare \
+  --a anthropic --a-effort low --b anthropic --b-effort high   # in your own terminal
+```
+
+`compare` runs two configurations on the same cases ([`compare.ts`](apps/api/evals/compare.ts),
+[`compare-cli.ts`](apps/api/evals/compare-cli.ts)). Each side takes the normal options with its
+letter (`--a-model`, `--a-effort`, `--a-prompt-version`, and the same for `--b-`), so the two can
+differ in provider, model, effort, or prompt version; both sides pass the real-call guard before
+anything is built. Output goes to `.evals/comparisons/<time>-<a>-vs-<b>/`: `comparison.md`,
+`comparison.json`, both runs' `results-*.jsonl`, `errors.jsonl`, and with `--judge`,
+`pairwise.jsonl`.
+
+- **Paired by case.** For label micro F1, exact set, priority accuracy, duplicate recall, injection
+  resistance, and (with `--judge`) each judge criterion, every case gets a value under A and B, and
+  the report gives B minus A over the cases both have a value for. Unanswered cases count as wrong,
+  as in the strict figures. Duplicate recall uses only the cases with a true duplicate, and
+  injection resistance only the injection cases both sides answered, so their n is small. With
+  `--reps`, a case's value is its mean over reps; cases, not reps, are resampled.
+- **Seeded paired bootstrap.** Each resample draws cases with replacement and takes both sides'
+  values for the cases drawn ([`bootstrap.ts`](apps/api/evals/bootstrap.ts)); the interval is the
+  95% percentile interval of the resampled differences (`--resamples`, default 10,000;
+  `--bootstrap-seed`, default 0). The same seed gives the same interval. The report also shows how
+  many paired cases differ at all: only those move the delta.
+- **Warnings, not significance.** A metric is flagged whenever its interval includes 0 ("no
+  difference shown") or it has fewer than 30 paired cases. Below 30, one case moves a rate by more
+  than 3 points and the percentile bootstrap's interval is known to be too narrow, so a small-n
+  metric never gets a direction, only "too few cases to read". Nothing is called significant: there's
+  no correction for comparing several metrics at once (at 95%, about one interval in twenty
+  excludes 0 by chance), and the cases are hand-written fixtures, not a sample of real issues.
+- **Pairwise judge.** With `--judge`, each case's two summaries go to the pairwise judge in both
+  orders. The report gives A wins, B wins, ties (flips included), flips and the flip rate, and B's
+  net preference per case (+1, 0, or -1) with its own interval. Identical summaries are ties
+  without a judge call. Pairwise verdicts aren't cached yet.
+- **Illustrative only with a local provider.** If either side is `fake`, `oracle`, or `null`, the
+  report says at the top that it isn't a measurement of triage quality. `--a null --b fake` shows
+  the format: the keyword baseline beats "no labels" on label F1, as a keyword rule should, and
+  most other figures carry a warning. No comparison output is committed.
+
+Next: exporting reviewed cases.
 
 ## Tests and checks
 
