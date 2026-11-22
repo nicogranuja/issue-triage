@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 
 import type { Database, Transaction } from '../db/client.js';
 import { issues, repositories, triageSuggestions } from '../db/schema.js';
+import { inSpan } from '../telemetry/tracing.js';
 import { findDuplicateCandidates, type DuplicateSearchOptions } from './duplicates.js';
 import type { LabelSource } from './labels.js';
 import {
@@ -39,7 +40,27 @@ class LeaseLost extends Error {}
  *
  * Failures are thrown for the worker to classify as retryable or not.
  */
-export async function runTriageJob(
+export function runTriageJob(
+  dependencies: TriageJobDependencies,
+  job: ClaimedJob,
+  signal: AbortSignal,
+): Promise<TriageJobOutcome> {
+  const { model } = dependencies;
+  const attributes = {
+    'triage.job.id': job.jobId,
+    'triage.job.attempt': job.attempts,
+    'triage.provider': model.provider,
+    'triage.model': model.modelId,
+    'triage.prompt_version': model.promptVersion,
+  };
+  return inSpan('triage.job', attributes, async (span) => {
+    const outcome = await runJob(dependencies, job, signal);
+    span.setAttribute('triage.outcome', outcome.status);
+    return outcome;
+  });
+}
+
+async function runJob(
   { db, model, labels, duplicates }: TriageJobDependencies,
   job: ClaimedJob,
   signal: AbortSignal,
