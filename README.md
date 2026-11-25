@@ -483,6 +483,76 @@ produced the suggestions, and a comparison of that model against another one on 
 Each case's notes record the model, prompt version, and whether the review accepted or edited,
 so the cases can be split by where they came from.
 
+## Observability
+
+Traces and metrics through OpenTelemetry, set up at process start in the API server and in
+`npm run worker` (`apps/api/src/telemetry/`). **Off unless configured**: with no `OTEL_*`
+variables set, no SDK is registered, spans and metrics are no-ops, and nothing is sent or served.
+On shutdown both processes flush what is buffered (waiting at most 5 seconds) before they exit.
+
+| Variable                                                                                                     | Default              | Meaning                                                            |
+| ------------------------------------------------------------------------------------------------------------ | -------------------- | ------------------------------------------------------------------ |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`                                                                                | (unset)              | Turns on OTLP/HTTP export of traces and metrics, to this collector |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `..._METRICS_ENDPOINT`                                                | (unset)              | The same, for one signal                                           |
+| `OTEL_TRACES_EXPORTER`                                                                                       | see meaning          | `otlp` or `none`; unset: `otlp` when an endpoint is set            |
+| `OTEL_METRICS_EXPORTER`                                                                                      | see meaning          | `otlp`, `prometheus`, `none`, comma-separated; as above            |
+| `OTEL_EXPORTER_PROMETHEUS_HOST` / `_PORT`                                                                    | `127.0.0.1` / `9464` | Where `/metrics` listens with `prometheus`                         |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | SDK defaults         | Read by the SDK as usual                                           |
+| `OTEL_SDK_DISABLED`                                                                                          | `false`              | `true` turns all of it off                                         |
+
+```sh
+OTEL_METRICS_EXPORTER=prometheus npm run dev:api     # then: curl -s 127.0.0.1:9464/metrics
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 npm run dev:api   # an OTel Collector, Alloy, or Tempo
+```
+
+`/metrics` has no authentication, so it binds to loopback unless told otherwise, and a non-loopback
+host logs a warning. Run the API and a worker on one host with different ports.
+The service names are `issue-triage-api` and `issue-triage-worker`.
+
+**Traces.** Manual spans, since auto-instrumentation needs ESM loader hooks and misses `fetch`:
+
+```
+triage.job                                        job id, attempt, provider, model, prompt version, outcome
+├── GET /repos/{owner}/{repo}/labels              client span per GitHub request: method, path template, status
+└── chat claude-opus-5-5                          GenAI conventions: gen_ai.system, request/response model,
+    └── (the Anthropic SDK's own span per call)   gen_ai.usage.* tokens; calls made, whether a fallback answered
+triage.write_back                                 job id, attempt, mode, outcome, labels added/removed/skipped/kept
+├── GET  /repos/{owner}/{repo}/issues/{issue_number}
+├── GET  /repos/{owner}/{repo}/issues/{issue_number}/events
+└── POST /repos/{owner}/{repo}/issues/{issue_number}/labels
+```
+
+**Metrics.** Prometheus names shown (OTel names use dots; the exporter adds no unit suffix):
+
+| Metric                                                                  | Labels                                                                      |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `issue_triage_webhook_deliveries_total`                                 | `event`, `outcome` (`duplicate` / total is the dedupe hit rate)             |
+| `issue_triage_queue_depth`, `issue_triage_queue_oldest_age` (s)         | `kind`, `state` (`due`, `delayed`, `running`); age: `kind`                  |
+| `issue_triage_job_runs_total`, `issue_triage_job_duration` (s)          | `kind`, `outcome`                                                           |
+| `issue_triage_job_failures_total`                                       | `kind`, `error_type` (class name, allowlisted), `retryable`                 |
+| `gen_ai_client_operation_duration` (s)                                  | `gen_ai_operation_name`, `gen_ai_system`, `gen_ai_request_model`            |
+| `issue_triage_model_tokens_total`                                       | system, model, `type` (`input`, `output`, `cache_read`, `cache_write`)      |
+| `issue_triage_model_suggestions_total`                                  | system, model, `outcome` (first try, after retry, invalid, refused, failed) |
+| `issue_triage_model_validation_retries_total`, `..._fallbacks_total`    | system, model                                                               |
+| `issue_triage_reviews_total`, `issue_triage_reviews_undone_total`       | `decision`                                                                  |
+| `issue_triage_write_back_runs_total`, `..._write_back_labels_total`     | `mode`, `outcome` / `change`                                                |
+| `issue_triage_github_requests_total`, `..._github_request_duration` (s) | `operation`, `http_request_method`, `status_class`                          |
+
+Every label and the values it may take are declared in `telemetry/metrics.ts`; the only one not
+fixed in code is the configured model id, one per process. A test runs a webhook, a triage, a
+review, and a write-back through the real code, and fails if any data point carries a label or
+value outside its declared set.
+
+**Never recorded**, in any span or metric: issue titles or bodies, prompts, model output
+(summaries, rationales), error messages (a database error quotes its SQL parameters), URL paths
+and query strings (they hold repository and label names), headers, the GitHub token, API keys, or
+the webhook secret. Failed spans record the error's class name only. Repository names, issue
+numbers, and label names are never metric labels. The Anthropic SDK's own spans are pinned to
+metadata only (`contentMode: 'metadata_only'`), so `ANTHROPIC_OPEN_TELEMETRY_TRACES_CONTENT_MODE`
+can't turn on prompt capture. A canary test puts marker strings in the issue, the model's reply,
+the token, and the secret, and checks that none reaches an exported span or metric; it was checked
+to fail when a span leaks the issue title.
+
 ## Tests and checks
 
 ```sh
