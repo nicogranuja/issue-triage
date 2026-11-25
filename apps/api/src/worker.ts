@@ -6,6 +6,9 @@
 import { createLogger } from './logging.js';
 import { ConfigError, loadProcessConfig } from './config.js';
 import { connectDatabase } from './db/client.js';
+import { registerQueueGauges } from './telemetry/metrics.js';
+import { startTelemetry } from './telemetry/sdk.js';
+import { countQueue } from './triage/queue.js';
 import { startTriageWorker } from './triage/start.js';
 
 async function main(): Promise<void> {
@@ -19,18 +22,21 @@ async function main(): Promise<void> {
   if (config.worker.concurrency === 0) {
     throw new ConfigError('TRIAGE_WORKER_CONCURRENCY is 0, so there is nothing to run.');
   }
+  const telemetry = startTelemetry({ serviceName: 'issue-triage-worker', logger });
 
   const database = await connectDatabase(config.database, {
     onPoolError: (error) => {
       logger.error({ err: error }, 'idle database connection failed');
     },
   });
+  registerQueueGauges(() => countQueue(database.db));
   const worker = await startTriageWorker(config, database.db, logger);
 
   const shutdown = (signal: NodeJS.Signals) => {
     logger.info({ signal }, 'shutting down');
     Promise.resolve(worker?.stop())
       .then(() => database.close())
+      .then(() => telemetry.shutdown())
       .then(
         () => process.exit(0),
         (error: unknown) => {

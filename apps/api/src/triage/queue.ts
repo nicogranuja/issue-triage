@@ -410,3 +410,40 @@ export function retryDelayMs(
   const ceiling = Math.min(maxMs, baseMs * 2 ** Math.max(0, attempt - 1));
   return Math.round(ceiling / 2 + random() * (ceiling / 2));
 }
+
+/** Jobs by kind and state, for the queue gauges. */
+export interface QueueCount {
+  kind: JobKind;
+  state: 'due' | 'delayed' | 'running';
+  jobs: number;
+  /** Seconds since the oldest job in this group became due; 0 for `delayed` and `running`. */
+  oldestAgeSeconds: number;
+}
+
+/**
+ * Counts pending and running jobs, split into due now and waiting out a delay (the undo window, a
+ * retry's backoff). An expired lease counts as due: any worker may claim it. One grouped query on
+ * the partial status indexes; read at each metrics collection.
+ */
+export async function countQueue(db: Executor): Promise<QueueCount[]> {
+  const state = sql<QueueCount['state']>`case
+    when ${triageJobs.status} = 'running' and ${triageJobs.lockedUntil} > now() then 'running'
+    when ${triageJobs.status} = 'running' or ${triageJobs.runAfter} <= now() then 'due'
+    else 'delayed' end`;
+  const rows = await db
+    .select({
+      kind: triageJobs.kind,
+      state,
+      jobs: sql<number>`count(*)::integer`,
+      oldestAgeSeconds: sql<number>`coalesce(extract(epoch from now() - min(
+        case when ${triageJobs.status} = 'running' then ${triageJobs.lockedUntil}
+        else ${triageJobs.runAfter} end))::float8, 0)`,
+    })
+    .from(triageJobs)
+    .where(inArray(triageJobs.status, ['pending', 'running']))
+    .groupBy(triageJobs.kind, state);
+  return rows.map((row) => ({
+    ...row,
+    oldestAgeSeconds: row.state === 'due' ? Math.max(0, row.oldestAgeSeconds) : 0,
+  }));
+}

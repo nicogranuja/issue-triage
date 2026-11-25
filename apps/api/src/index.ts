@@ -3,11 +3,16 @@ import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config.js';
 import { connectDatabase } from './db/client.js';
 import { seedDemoDataIfEmpty } from './dev/seed.js';
+import { registerQueueGauges } from './telemetry/metrics.js';
+import { isLoopback, startTelemetry } from './telemetry/sdk.js';
+import { countQueue } from './triage/queue.js';
 import { startTriageWorker } from './triage/start.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel });
+  // First, so the providers are registered before anything looks up a tracer or a meter.
+  const telemetry = startTelemetry({ serviceName: 'issue-triage-api', logger });
 
   const database = await connectDatabase(config.database, {
     onPoolError: (error) => {
@@ -20,6 +25,7 @@ async function main(): Promise<void> {
     await database.migrate();
   }
   logger.info({ driver: database.driver }, 'database ready');
+  registerQueueGauges(() => countQueue(database.db));
   if (config.seedDemoData && (await seedDemoDataIfEmpty(database.db))) {
     logger.info('loaded demo data into the empty database');
   }
@@ -36,6 +42,8 @@ async function main(): Promise<void> {
     // The worker goes first: it still needs the database to put interrupted jobs back.
     Promise.resolve(worker?.stop())
       .then(() => app.close())
+      // Last, so the final runs' spans and metrics are exported.
+      .then(() => telemetry.shutdown())
       .then(
         () => process.exit(0),
         (error: unknown) => {
@@ -54,10 +62,6 @@ async function main(): Promise<void> {
       'the review API has no authentication yet: anyone who can reach this address can review and write to GitHub',
     );
   }
-}
-
-function isLoopback(host: string): boolean {
-  return host === 'localhost' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host);
 }
 
 main().catch((error: unknown) => {
