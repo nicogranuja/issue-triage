@@ -9,6 +9,7 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import { z } from 'zod';
 
 import type { Database } from '../db/client.js';
+import { record } from '../telemetry/metrics.js';
 import {
   getSuggestionDetail,
   InvalidCursorError,
@@ -152,6 +153,7 @@ export const reviewRoutes: FastifyPluginAsync<ReviewRoutesOptions> = async (
         { suggestionId: params.id, decision: review.decision, writeBack: review.writeBack?.jobId },
         'suggestion reviewed',
       );
+      record('reviews', { decision: review.decision });
       return { review };
     } catch (error) {
       return sendReviewError(reply, error);
@@ -166,6 +168,7 @@ export const reviewRoutes: FastifyPluginAsync<ReviewRoutesOptions> = async (
     try {
       await undoReview(db, params.id);
       request.log.info({ suggestionId: params.id }, 'review undone');
+      record('reviewsUndone', {});
       return await reply.code(204).send();
     } catch (error) {
       return sendReviewError(reply, error);

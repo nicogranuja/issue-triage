@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 
 import type { Database, Transaction } from '../db/client.js';
+import type { WEBHOOK_EVENTS } from '../telemetry/metrics.js';
+import { record, type WEBHOOK_OUTCOMES } from '../telemetry/metrics.js';
 import { claimDelivery } from './deliveries.js';
 import { applyIssuesEvent } from './issues.js';
 import { applyLabelEvent } from './labels.js';
@@ -33,6 +35,18 @@ interface HandledDelivery {
   status: WebhookResponse['status'];
   /** Log context describing what was applied. */
   details?: Record<string, unknown> | undefined;
+}
+
+/** The `event` label: the events this app handles, and `other` for the rest (bounded). */
+function eventLabel(event: string): (typeof WEBHOOK_EVENTS)[number] {
+  return event === 'issues' || event === 'label' || event === 'ping' ? event : 'other';
+}
+
+function count(
+  event: (typeof WEBHOOK_EVENTS)[number],
+  outcome: (typeof WEBHOOK_OUTCOMES)[number],
+): void {
+  record('webhookDeliveries', { event, outcome });
 }
 
 /** What to do with a verified delivery, decided before opening a transaction. */
@@ -98,11 +112,14 @@ export const githubWebhookRoutes: FastifyPluginAsync<GithubWebhookOptions> = asy
         { signature: signature === undefined ? 'missing' : 'invalid' },
         'rejected webhook: bad signature',
       );
+      // Headers aren't trusted before the signature checks out: the event is `unknown`.
+      count('unknown', 'bad_signature');
       return reply.code(401).send({ error: 'Invalid or missing signature' });
     }
 
     const headers = deliveryHeadersSchema.safeParse(request.headers);
     if (!headers.success) {
+      count('unknown', 'bad_request');
       return reply.code(400).send({ error: 'Missing X-GitHub-Delivery or X-GitHub-Event header' });
     }
     const deliveryId = headers.data['x-github-delivery'];
@@ -112,6 +129,7 @@ export const githubWebhookRoutes: FastifyPluginAsync<GithubWebhookOptions> = asy
     try {
       payload = JSON.parse(rawBody.toString('utf8'));
     } catch {
+      count(eventLabel(event), 'bad_request');
       return reply.code(400).send({ error: 'Body is not valid JSON' });
     }
 
@@ -126,6 +144,7 @@ export const githubWebhookRoutes: FastifyPluginAsync<GithubWebhookOptions> = asy
         message: issue.message,
       }));
       log.warn({ problems }, 'rejected webhook: unexpected payload');
+      count(eventLabel(event), 'bad_request');
       return reply.code(400).send({ error: `Unexpected ${event} payload` });
     }
 
@@ -141,6 +160,7 @@ export const githubWebhookRoutes: FastifyPluginAsync<GithubWebhookOptions> = asy
 
     // Logged after commit, so a line here means the outcome is durable.
     log.info({ status, ...details }, 'webhook handled');
+    count(eventLabel(event), status);
     return reply.code(200).send({ status } satisfies WebhookResponse);
   });
 };

@@ -7,6 +7,7 @@ import type { Logger } from 'pino';
 
 import type { Database } from '../db/client.js';
 import { GitHubApiError } from '../github/client.js';
+import { errorType, record, type JOB_OUTCOMES } from '../telemetry/metrics.js';
 import type { DuplicateSearchOptions } from './duplicates.js';
 import type { LabelSource } from './labels.js';
 import { TriageModelError, type TriageModel } from './model.js';
@@ -44,6 +45,8 @@ export interface TriageWorkerOptions {
   workerId?: string;
   random?: () => number;
 }
+
+type Outcome = (typeof JOB_OUTCOMES)[number];
 
 const DEFAULT_BACKOFF: BackoffPolicy = { baseMs: 30_000, maxMs: 30 * 60_000 };
 
@@ -188,20 +191,32 @@ export class TriageWorker {
       // Earlier runs ended with an expired lease (a crash or hang), not a recorded failure.
       await failJob(db, job, `Gave up after ${maxAttempts} attempts`);
       log.error('triage job exceeded its attempts');
+      record('jobRuns', { kind: job.kind, outcome: 'failed' });
+      record('jobFailures', {
+        kind: job.kind,
+        error_type: 'attempts_exhausted',
+        retryable: 'false',
+      });
       return true;
     }
 
     const deadline = AbortSignal.timeout(this.#options.jobTimeoutMs);
     const signal = AbortSignal.any([deadline, this.#interrupt.signal]);
+    const started = performance.now();
+    let outcome: Outcome = 'failed';
     try {
       const { writeBack } = this.#options;
-      const outcome =
+      const finished =
         job.kind === 'write_back' && writeBack
           ? await runWriteBackJob({ db, ...writeBack }, job, signal)
           : await runTriageJob(this.#options, job, signal);
-      log.info(outcome, `${job.kind} job finished`);
+      outcome = finished.status;
+      log.info(finished, `${job.kind} job finished`);
     } catch (error) {
-      await this.#recordFailure(job, error, deadline.aborted, log);
+      outcome = await this.#recordFailure(job, error, deadline.aborted, log);
+    } finally {
+      record('jobRuns', { kind: job.kind, outcome });
+      record('jobDuration', { kind: job.kind, outcome }, (performance.now() - started) / 1000);
     }
     return true;
   }
@@ -211,16 +226,26 @@ export class TriageWorker {
     error: unknown,
     timedOut: boolean,
     log: Logger,
-  ): Promise<void> {
+  ): Promise<Outcome> {
     const { db, maxAttempts, jobTimeoutMs } = this.#options;
-    try {
-      if (this.#interrupt.signal.aborted && !timedOut) {
+    if (this.#interrupt.signal.aborted && !timedOut) {
+      try {
         const result = await releaseJob(db, job);
         log.info({ result }, 'triage job interrupted by shutdown');
-        return;
+      } catch (recordError) {
+        log.error({ err: recordError, cause: error }, 'could not record triage job failure');
       }
-      const failure = classify(error, timedOut ? jobTimeoutMs : null);
-      if (failure.retryable && job.attempts < maxAttempts) {
+      return 'interrupted';
+    }
+    const failure = classify(error, timedOut ? jobTimeoutMs : null);
+    const willRetry = failure.retryable && job.attempts < maxAttempts;
+    record('jobFailures', {
+      kind: job.kind,
+      error_type: timedOut ? 'timeout' : errorType(error),
+      retryable: willRetry ? 'true' : 'false',
+    });
+    try {
+      if (willRetry) {
         const delayMs = Math.max(
           retryDelayMs(job.attempts, this.#backoff, this.#random),
           failure.retryAfterMs ?? 0,
@@ -235,5 +260,6 @@ export class TriageWorker {
       // The job stays leased until it expires, then another worker picks it up.
       log.error({ err: recordError, cause: error }, 'could not record triage job failure');
     }
+    return willRetry ? 'retrying' : 'failed';
   }
 }
