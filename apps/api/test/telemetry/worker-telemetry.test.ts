@@ -166,7 +166,7 @@ describe('telemetry of a triage job, end to end', () => {
     expect(model.inputs[0]?.issue.title).toBe(CANARY.title);
 
     const queue = await app.inject({ method: 'GET', url: '/api/queue' });
-    const [item] = (queue.json() as { items: { suggestionId: number }[] }).items;
+    const [item] = queue.json<{ items: { suggestionId: number }[] }>().items;
     if (!item) {
       throw new Error('No suggestion in the review queue');
     }
