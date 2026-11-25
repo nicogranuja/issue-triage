@@ -11,6 +11,8 @@ import type { WriteBackMode } from '../config.js';
 import type { Database } from '../db/client.js';
 import { issues, repositories, reviews, triageJobs, triageSuggestions } from '../db/schema.js';
 import type { GitHubClient, LabelEvent } from '../github/client.js';
+import { record } from '../telemetry/metrics.js';
+import { inSpan } from '../telemetry/tracing.js';
 import type { LabelSource } from './labels.js';
 import { cancelJob, completeJob, saveProgress, type ClaimedJob } from './queue.js';
 
@@ -232,7 +234,42 @@ export function mergeAttempt(
  * Errors from GitHub are thrown for the worker to classify: rate limits and outages retry with
  * backoff; 401, 403, 404, and 422 fail the job with a message saying what to fix.
  */
-export async function runWriteBackJob(
+export function runWriteBackJob(
+  dependencies: WriteBackDependencies,
+  job: ClaimedJob,
+  signal: AbortSignal,
+): Promise<WriteBackOutcome> {
+  const mode = dependencies.mode === 'dry-run' ? 'dry_run' : 'github';
+  const attributes = {
+    'triage.job.id': job.jobId,
+    'triage.job.attempt': job.attempts,
+    'triage.write_back.mode': mode,
+  };
+  return inSpan('triage.write_back', attributes, async (span) => {
+    const outcome = await writeBack(dependencies, job, signal);
+    span.setAttribute('triage.outcome', outcome.status);
+    record('writeBacks', { mode, outcome: outcome.status });
+    if (outcome.status === 'succeeded') {
+      // This run's own changes (counts only: label names are unbounded and the repository's own).
+      const attempt = outcome.result.attempts?.find((entry) => entry.attempt === job.attempts);
+      const counts = {
+        added: attempt?.added.length ?? 0,
+        removed: attempt?.removed.length ?? 0,
+        skipped: attempt?.skipped.length ?? 0,
+        kept: attempt?.kept.length ?? 0,
+      } as const;
+      for (const [change, count] of Object.entries(counts) as [keyof typeof counts, number][]) {
+        span.setAttribute(`triage.write_back.labels_${change}`, count);
+        if (count > 0) {
+          record('writeBackLabels', { mode, change }, count);
+        }
+      }
+    }
+    return outcome;
+  });
+}
+
+async function writeBack(
   { db, github, labels, mode }: WriteBackDependencies,
   job: ClaimedJob,
   signal: AbortSignal,

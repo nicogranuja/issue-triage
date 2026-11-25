@@ -1,6 +1,25 @@
 import { z } from 'zod';
 
 import { LOG_MESSAGE } from '../logging.js';
+import type { GITHUB_OPERATIONS, STATUS_CLASSES } from '../telemetry/metrics.js';
+import { record } from '../telemetry/metrics.js';
+import { inSpan, SpanKind } from '../telemetry/tracing.js';
+
+type Operation = (typeof GITHUB_OPERATIONS)[number];
+type StatusClass = (typeof STATUS_CLASSES)[number];
+
+/** Path templates per operation, for spans: the real path holds repository and label names. */
+const URL_TEMPLATES: Record<Operation, string> = {
+  list_labels: '/repos/{owner}/{repo}/labels',
+  get_issue: '/repos/{owner}/{repo}/issues/{issue_number}',
+  list_label_events: '/repos/{owner}/{repo}/issues/{issue_number}/events',
+  add_labels: '/repos/{owner}/{repo}/issues/{issue_number}/labels',
+  remove_label: '/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}',
+};
+
+function statusClass(status: number): StatusClass {
+  return status >= 500 ? '5xx' : status >= 400 ? '4xx' : status >= 300 ? '3xx' : '2xx';
+}
 
 /**
  * A small client for the parts of the GitHub REST API this app uses: reading a repository's
@@ -231,7 +250,7 @@ export class GitHubClient {
           false,
         );
       }
-      const response = await this.#request('GET', url, options.signal);
+      const response = await this.#request('list_labels', 'GET', url, options.signal);
       const parsed = labelsSchema.safeParse(await this.#json(response, 'GET', url));
       if (!parsed.success) {
         throw new GitHubApiError(
@@ -256,7 +275,7 @@ export class GitHubClient {
     options: { signal?: AbortSignal } = {},
   ): Promise<GitHubIssue> {
     const url = this.#issueUrl(owner, repo, issueNumber, '');
-    const response = await this.#request('GET', url, options.signal);
+    const response = await this.#request('get_issue', 'GET', url, options.signal);
     const parsed = issueSchema.safeParse(await this.#json(response, 'GET', url));
     if (!parsed.success) {
       throw new GitHubApiError(
@@ -299,7 +318,7 @@ export class GitHubClient {
 
     const events: LabelEvent[] = [];
     const read = async (url: URL) => {
-      const response = await this.#request('GET', url, options.signal);
+      const response = await this.#request('list_label_events', 'GET', url, options.signal);
       const parsed = issueEventsSchema.safeParse(await this.#json(response, 'GET', url));
       if (!parsed.success) {
         throw new GitHubApiError(
@@ -372,7 +391,7 @@ export class GitHubClient {
     options: { signal?: AbortSignal } = {},
   ): Promise<void> {
     const url = this.#issueUrl(owner, repo, issueNumber, '/labels');
-    await this.#request('POST', url, options.signal, { labels });
+    await this.#request('add_labels', 'POST', url, options.signal, { labels });
   }
 
   /**
@@ -389,7 +408,7 @@ export class GitHubClient {
   ): Promise<boolean> {
     const url = this.#issueUrl(owner, repo, issueNumber, `/labels/${encodeLabelSegment(label)}`);
     try {
-      await this.#request('DELETE', url, options.signal);
+      await this.#request('remove_label', 'DELETE', url, options.signal);
       return true;
     } catch (error) {
       if (error instanceof GitHubApiError && error.status === 404) {
@@ -420,11 +439,56 @@ export class GitHubClient {
     return url;
   }
 
-  async #request(
+  /**
+   * One request, in a client span, counted with its duration by status class. The span records the
+   * method, the path template, and the status: never the path itself (it holds repository and
+   * label names), the query, a header, or a body.
+   */
+  #request(
+    operation: Operation,
     method: 'GET' | 'POST' | 'DELETE',
     url: URL,
     signal: AbortSignal | undefined,
     body?: unknown,
+  ): Promise<Response> {
+    const template = URL_TEMPLATES[operation];
+    const attributes = {
+      'http.request.method': method,
+      'url.template': template,
+      'server.address': this.#baseUrl.hostname,
+      'github.operation': operation,
+    };
+    return inSpan(
+      `${method} ${template}`,
+      attributes,
+      async (span) => {
+        const started = performance.now();
+        const outcome: { status: StatusClass } = { status: 'network_error' };
+        try {
+          return await this.#send(method, url, signal, body, (code, timedOut) => {
+            if (code !== null) {
+              span.setAttribute('http.response.status_code', code);
+            }
+            outcome.status =
+              code === null ? (timedOut ? 'timeout' : 'network_error') : statusClass(code);
+          });
+        } finally {
+          const labels = { operation, 'http.request.method': method, status_class: outcome.status };
+          record('githubRequests', labels);
+          record('githubDuration', labels, (performance.now() - started) / 1000);
+        }
+      },
+      SpanKind.CLIENT,
+    );
+  }
+
+  async #send(
+    method: 'GET' | 'POST' | 'DELETE',
+    url: URL,
+    signal: AbortSignal | undefined,
+    body: unknown,
+    /** The response's status, or null with whether it timed out when none arrived. */
+    onStatus: (status: number | null, timedOut: boolean) => void,
   ): Promise<Response> {
     const headers: Record<string, string> = {
       accept: 'application/vnd.github+json',
@@ -453,6 +517,7 @@ export class GitHubClient {
         // The caller gave up (for example, the worker is shutting down): not a GitHub problem.
         throw error;
       }
+      onStatus(null, timeout.aborted);
       if (timeout.aborted) {
         throw new GitHubApiError(
           `${method} ${url.pathname} failed: timed out after ${this.#timeoutMs} ms`,
@@ -469,6 +534,7 @@ export class GitHubClient {
       );
     }
 
+    onStatus(response.status, false);
     if (response.ok) {
       return response;
     }

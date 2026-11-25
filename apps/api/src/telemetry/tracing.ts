@@ -9,7 +9,9 @@
  * model output, or an error message, which can contain either (a `DrizzleQueryError` carries its
  * SQL parameters). A failed span records the error's class name as `error.type` and nothing else.
  */
-import { SpanStatusCode, trace, type Attributes, type Span } from '@opentelemetry/api';
+import { SpanKind, SpanStatusCode, trace, type Attributes, type Span } from '@opentelemetry/api';
+
+export { SpanKind };
 
 export const TRACER_NAME = 'issue-triage';
 
@@ -22,8 +24,10 @@ export function inSpan<T>(
   name: string,
   attributes: Attributes,
   fn: (span: Span) => Promise<T>,
+  /** `CLIENT` for a call to another service (GitHub, the model); `INTERNAL` otherwise. */
+  kind: SpanKind = SpanKind.INTERNAL,
 ): Promise<T> {
-  return tracer().startActiveSpan(name, { attributes }, async (span) => {
+  return tracer().startActiveSpan(name, { attributes, kind }, async (span) => {
     try {
       return await fn(span);
     } catch (error) {

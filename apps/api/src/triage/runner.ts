@@ -2,11 +2,13 @@ import { and, eq, sql } from 'drizzle-orm';
 
 import type { Database, Transaction } from '../db/client.js';
 import { issues, repositories, triageSuggestions } from '../db/schema.js';
-import { inSpan } from '../telemetry/tracing.js';
+import { genAiSystem, record } from '../telemetry/metrics.js';
+import { inSpan, SpanKind } from '../telemetry/tracing.js';
 import { findDuplicateCandidates, type DuplicateSearchOptions } from './duplicates.js';
 import type { LabelSource } from './labels.js';
 import {
   InvalidModelOutputError,
+  ModelRefusalError,
   type TriageInput,
   type TriageModel,
   type TriageResult,
@@ -111,7 +113,7 @@ async function runJob(
     })),
   };
 
-  const result = await model.suggest(input, { signal });
+  const result = await suggest(model, input, signal);
 
   // Every provider's output is untrusted, whatever it validated itself: check it again against
   // the labels and candidates this job actually sent.
@@ -140,6 +142,93 @@ async function runJob(
       return { status: 'lease_lost' };
     }
     throw error;
+  }
+}
+
+/**
+ * Asks the model, in a client span with GenAI semantic-convention attributes, and records the
+ * model metrics. Metadata only: the system, the models, token counts, the number of calls, and
+ * whether a fallback answered. Never the prompt, the issue, or the reply.
+ */
+function suggest(
+  model: TriageModel,
+  input: TriageInput,
+  signal: AbortSignal,
+): Promise<TriageResult> {
+  const labels = {
+    'gen_ai.system': genAiSystem(model.provider),
+    'gen_ai.request.model': model.modelId,
+  };
+  const attributes = { 'gen_ai.operation.name': 'chat', ...labels };
+  return inSpan(
+    `chat ${model.modelId}`,
+    attributes,
+    async (span) => {
+      const started = performance.now();
+      const duration = () => (performance.now() - started) / 1000;
+      try {
+        const result = await model.suggest(input, { signal });
+        const { usage } = result;
+        span.setAttributes({
+          'gen_ai.response.model': result.model,
+          'gen_ai.usage.input_tokens':
+            usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens,
+          'gen_ai.usage.output_tokens': usage.outputTokens,
+          'gen_ai.usage.cache_read.input_tokens': usage.cacheReadInputTokens,
+          'gen_ai.usage.cache_creation.input_tokens': usage.cacheCreationInputTokens,
+          'triage.model.calls': result.modelCalls,
+          'triage.model.fallback': result.fallback ?? false,
+        });
+        record('modelDuration', { 'gen_ai.operation.name': 'chat', ...labels }, duration());
+        recordTokens(labels, result);
+        const retried = result.modelCalls > 1;
+        record('modelSuggestions', {
+          ...labels,
+          outcome: retried ? 'valid_after_retry' : 'valid_first_try',
+        });
+        if (retried) {
+          record('validationRetries', labels);
+        }
+        if (result.fallback) {
+          record('fallbacks', labels);
+        }
+        return result;
+      } catch (error) {
+        record('modelDuration', { 'gen_ai.operation.name': 'chat', ...labels }, duration());
+        if (error instanceof InvalidModelOutputError) {
+          // Validation failed twice: the first time led to a corrective turn.
+          record('validationRetries', labels);
+        }
+        record('modelSuggestions', {
+          ...labels,
+          outcome:
+            error instanceof ModelRefusalError
+              ? 'refused'
+              : error instanceof InvalidModelOutputError
+                ? 'invalid'
+                : 'failed',
+        });
+        throw error;
+      }
+    },
+    SpanKind.CLIENT,
+  );
+}
+
+function recordTokens(
+  labels: { 'gen_ai.system': ReturnType<typeof genAiSystem>; 'gen_ai.request.model': string },
+  { usage }: TriageResult,
+): void {
+  const counts = {
+    input: usage.inputTokens,
+    output: usage.outputTokens,
+    cache_read: usage.cacheReadInputTokens,
+    cache_write: usage.cacheCreationInputTokens,
+  } as const;
+  for (const [type, count] of Object.entries(counts) as [keyof typeof counts, number][]) {
+    if (count > 0) {
+      record('modelTokens', { ...labels, type }, count);
+    }
   }
 }
 
