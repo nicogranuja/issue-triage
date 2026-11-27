@@ -13,7 +13,7 @@ An eval harness measures suggestion quality.
 - [x] Monorepo, CI, database schema and migrations, verified and idempotent webhook ingestion
 - [x] Triage engine: Claude structured output, provider interface, Postgres job queue
 - [x] Review UI: keyboard-driven queue with accept, edit, and reject, and write-back to GitHub
-- [ ] Evals and observability: suggestion quality metrics, OpenTelemetry, Grafana dashboard
+- [x] Evals and observability: suggestion quality metrics, OpenTelemetry, Grafana dashboard
 - [ ] Auth and release: GitHub OAuth, rate limiting, security pass, Docker, docs, v0.1.0
 
 ## Layout
@@ -23,6 +23,7 @@ An eval harness measures suggestion quality.
 | `apps/api`        | Fastify API, review API, worker (triage and write-back), schema  |
 | `apps/web`        | React + Vite + TanStack Query review UI, component and e2e tests |
 | `packages/shared` | Domain types, the API contract (Zod), label-change planning      |
+| `deploy/grafana`  | Grafana dashboard for the Prometheus metrics                     |
 
 ![The review queue, light theme](docs/queue-light.png)
 
@@ -542,6 +543,26 @@ Every label and the values it may take are declared in `telemetry/metrics.ts`; t
 fixed in code is the configured model id, one per process. A test runs a webhook, a triage, a
 review, and a write-back through the real code, and fails if any data point carries a label or
 value outside its declared set.
+
+**Dashboard.** [`deploy/grafana/issue-triage.json`](deploy/grafana/issue-triage.json) has seven
+rows: triage throughput (runs, duration, failures by error class), queue depth and the oldest
+due job's age, model latency, tokens, and an estimated cost, validation retry, refusal, and
+fallback rates, review decisions (acceptance, edit, and undo rates), write-back outcomes with
+their GitHub requests, and webhook health (rejected deliveries, redelivery rate). To import it:
+
+1. Run the API and the worker with `OTEL_METRICS_EXPORTER=prometheus` (different ports, e.g.
+   `OTEL_EXPORTER_PROMETHEUS_PORT=9465` for the worker) and have Prometheus scrape both.
+2. In Grafana, go to **Dashboards → New → Import**, upload the JSON file, and pick that
+   Prometheus data source. The `datasource` variable switches it later.
+3. Check the four price variables (USD per million tokens, Claude Opus 5.5 list prices by
+   default) against the [pricing page](https://platform.claude.com/docs/en/about-claude/pricing)
+   and your model. The cost panels are estimates: tokens carry the configured model, so a refusal
+   fallback is priced at that model's rates, and Bedrock is billed by AWS.
+
+A test (`test/telemetry/dashboard.test.ts`) drives the real code into the Prometheus exporter,
+a refused triage and an undone review included, parses every panel query, and fails if one
+selects a metric that isn't emitted, or matches or groups on a label that isn't on that metric
+or a value that isn't declared.
 
 **Never recorded**, in any span or metric: issue titles or bodies, prompts, model output
 (summaries, rationales), error messages (a database error quotes its SQL parameters), URL paths
