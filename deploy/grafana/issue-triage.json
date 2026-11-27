@@ -301,7 +301,7 @@
     {
       "type": "timeseries",
       "title": "Queue depth",
-      "description": "Jobs in the queue by kind and state: due now, waiting out a delay or backoff, or running. Reported at 0 when empty.",
+      "description": "Jobs in the queue by kind and state: due now, waiting out a delay or backoff, or running. Reported at 0 when empty. The API and every worker report the same database-wide count, so this takes the largest rather than the sum.",
       "id": 6,
       "datasource": {
         "type": "prometheus",
@@ -344,7 +344,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (kind, state) (issue_triage_queue_depth)",
+          "expr": "max by (kind, state) (issue_triage_queue_depth)",
           "legendFormat": "{{kind}} {{state}}",
           "datasource": {
             "type": "prometheus",
@@ -358,7 +358,7 @@
     {
       "type": "timeseries",
       "title": "Oldest due job age",
-      "description": "How long the oldest due job has waited to be claimed, by kind. Growing steadily means the workers are not keeping up. Several processes report it, so this takes the largest.",
+      "description": "How long the oldest due job has waited to be claimed, by kind. Growing steadily means the workers are not keeping up. Every process reports the same database-wide value, so this takes the largest.",
       "id": 7,
       "datasource": {
         "type": "prometheus",

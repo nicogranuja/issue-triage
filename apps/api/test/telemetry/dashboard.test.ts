@@ -329,6 +329,19 @@ describe('the Grafana dashboard', () => {
     }
   });
 
+  it('never sums the queue gauges, which every process reports in full', () => {
+    const gauges = new Set(
+      Object.values(METRICS)
+        .filter((definition) => definition.type === 'gauge')
+        .map((definition) => definition.name.replaceAll('.', '_')),
+    );
+    for (const { panel, expr } of queries(dashboard)) {
+      if (parseQuery(expr).metrics.some((metric) => gauges.has(metric))) {
+        expect(expr, panel).not.toMatch(/\bsum\b/);
+      }
+    }
+  });
+
   it('puts every declared metric on a panel', () => {
     const queried = new Set(queries(dashboard).flatMap(({ expr }) => parseQuery(expr).metrics));
     const keys = new Set(
